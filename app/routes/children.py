@@ -16,6 +16,8 @@ from app.utils.constants import (
 router = APIRouter(prefix="/children", tags=["Children"])
 
 
+# Accept both /children and /children/ to avoid 307 redirects from trailing slash normalization
+@router.post("", response_model=ChildResponse, status_code=status.HTTP_201_CREATED)
 @router.post("/", response_model=ChildResponse, status_code=status.HTTP_201_CREATED)
 def create_child(
     child_data: ChildCreate,
