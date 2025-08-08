@@ -6,6 +6,8 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.config import settings
 from app.schemas.auth import TokenData
+from app.database import SessionLocal
+from app.models.user import User, SubscriptionTier
 
 # Password hashing (use pbkdf2_sha256 to avoid platform bcrypt issues in some environments)
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
@@ -42,16 +44,37 @@ def verify_token(token: str) -> Optional[TokenData]:
     try:
         payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
         user_id: str = payload.get("sub")
+        email: Optional[str] = payload.get("email")
         if user_id is None:
             return None
-        token_data = TokenData(user_id=user_id)
+        token_data = TokenData(user_id=user_id, email=email)
         return token_data
     except JWTError:
         return None
 
 
+def _get_or_create_user(user_id: str, email: Optional[str]) -> None:
+    """Ensure a user row exists in DB for this user_id."""
+    db = SessionLocal()
+    try:
+        u = db.query(User).filter(User.id == user_id).first()
+        if not u:
+            u = User(
+                id=user_id,
+                email=email or f"user-{user_id}@example.com",
+                password_hash=get_password_hash("autogen"),
+                first_name=(email.split("@")[0] if email else "User"),
+                last_name="",
+                subscription_tier=SubscriptionTier.FREE,
+            )
+            db.add(u)
+            db.commit()
+    finally:
+        db.close()
+
+
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """Get the current authenticated user"""
+    """Get the current authenticated user and ensure DB record exists."""
     token = credentials.credentials
     token_data = verify_token(token)
     
@@ -61,5 +84,6 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             detail="Could not validate credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
-    return token_data.user_id 
+    # Ensure persistence for downstream features
+    _get_or_create_user(token_data.user_id, token_data.email)
+    return token_data.user_id
