@@ -14,7 +14,8 @@ from app.routes import (
     chat_router,
     gamification_router,
     caregiver_router,
-    sync_router
+    sync_router,
+    audio_router
 )
 from app.config import settings
 
@@ -73,6 +74,7 @@ app.include_router(chat_router)
 app.include_router(gamification_router)
 app.include_router(caregiver_router)
 app.include_router(sync_router)
+app.include_router(audio_router)
 
 
 @app.get("/")

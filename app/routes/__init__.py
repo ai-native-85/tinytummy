@@ -7,6 +7,7 @@ from .chat import router as chat_router
 from .gamification import router as gamification_router
 from .caregiver import router as caregiver_router
 from .sync import router as sync_router
+from .audio import router as audio_router
 
 __all__ = [
     "auth_router",
@@ -17,5 +18,6 @@ __all__ = [
     "chat_router",
     "gamification_router",
     "caregiver_router",
-    "sync_router"
+    "sync_router",
+    "audio_router",
 ] 
