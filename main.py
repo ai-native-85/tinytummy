@@ -15,7 +15,9 @@ from app.routes import (
     gamification_router,
     caregiver_router,
     sync_router,
-    audio_router
+    audio_router,
+    nutrition_router,
+    meals_nutrition_alias_router,
 )
 from app.config import settings
 
@@ -78,6 +80,7 @@ app.include_router(caregiver_router)
 app.include_router(sync_router)
 app.include_router(audio_router)
 app.include_router(nutrition_router)
+app.include_router(meals_nutrition_alias_router)
 
 
 @app.get("/")
@@ -95,6 +98,11 @@ async def root():
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "service": "tinytummy-api"}
+
+
+@app.get("/healthz")
+async def health_probe():
+    return {"status": "ok"}
 
 
 if __name__ == "__main__":

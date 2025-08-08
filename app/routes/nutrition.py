@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from datetime import datetime, date
 from typing import Dict
@@ -11,7 +11,7 @@ from app.models.meal import Meal
 from sqlalchemy import func
 
 
-router = APIRouter(prefix="/nutrition", tags=["Nutrition"])
+router = APIRouter(prefix="/nutrition", tags=["nutrition"])
 
 
 def _calc_age_months(dob: date) -> int:
@@ -68,7 +68,7 @@ def get_nutrition_targets(child_id: str, current_user_id: str = Depends(get_curr
 
 
 @router.get("/daily_totals/{child_id}", response_model=DailyTotalsResponse)
-def get_daily_totals(child_id: str, date: str, current_user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_daily_totals(child_id: str, date: str = Query(..., description="YYYY-MM-DD"), current_user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
     child = db.query(Child).filter(Child.id == child_id, Child.user_id == current_user_id).first()
     if not child:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Child not found")
@@ -112,5 +112,15 @@ def get_daily_totals(child_id: str, date: str, current_user_id: str = Depends(ge
             totals[k] = float(v)
 
     return DailyTotalsResponse(date=str(day), totals=totals)
+
+
+# --- Alias router for backward-compatibility under /meals ---
+meals_router = APIRouter(prefix="/meals", tags=["meals"])
+
+
+@meals_router.get("/daily_totals/{child_id}", response_model=DailyTotalsResponse)
+def daily_totals_alias(child_id: str, date: str = Query(..., description="YYYY-MM-DD"), current_user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
+    # Delegate to original to ensure identical payloads
+    return get_daily_totals(child_id=child_id, date=date, current_user_id=current_user_id, db=db)
 
 

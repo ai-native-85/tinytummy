@@ -9,6 +9,7 @@ from .caregiver import router as caregiver_router
 from .sync import router as sync_router
 from .audio import router as audio_router
 from .nutrition import router as nutrition_router
+from .nutrition import meals_router as meals_nutrition_alias_router
 
 __all__ = [
     "auth_router",
@@ -22,4 +23,5 @@ __all__ = [
     "sync_router",
     "audio_router",
     "nutrition_router",
+    "meals_nutrition_alias_router",
 ] 
