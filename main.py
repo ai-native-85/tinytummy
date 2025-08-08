@@ -48,6 +48,8 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan
 )
+# Disable automatic trailing-slash redirects to avoid 307s when clients omit slash
+app.router.redirect_slashes = False
 
 # Add CORS middleware
 app.add_middleware(
