@@ -182,6 +182,12 @@ pytest --cov=app
 
 ## 🚀 Deployment
 
+### Railway (current)
+
+- Deployed from `main` branch.
+- Latest change: normalize `meal_type` & `input_method` to lowercase in `MealCreate`.
+- To force redeploy: push any commit to `main`.
+
 ### Render
 ```yaml
 # render.yaml
