@@ -1,4 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import ValidationError
+import logging
 from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
@@ -25,25 +27,42 @@ def create_child(
     db: Session = Depends(get_db)
 ):
     """Create a new child profile"""
-    # Check subscription tier for multiple children
-    user = db.query(User).filter(User.id == current_user_id).first()
-    if user.subscription_tier == "free":
-        existing_children = db.query(Child).filter(Child.user_id == current_user_id).count()
-        if existing_children >= FREE_TIER_CHILD_LIMIT:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=PREMIUM_FEATURE_ERROR.format(feature=FEATURE_MULTIPLE_CHILDREN)
-            )
-    
-    payload = child_data.dict()
-    # Ensure gender stored consistently in lowercase
-    if payload.get("gender"):
-        payload["gender"] = payload["gender"].lower()
-    db_child = Child(**payload, user_id=current_user_id)
-    db.add(db_child)
-    db.commit()
-    db.refresh(db_child)
-    return db_child
+    logger = logging.getLogger(__name__)
+    try:
+        # Log safe payload snapshot
+        logger.info("Create child called", extra={
+            "user_id": current_user_id,
+            "payload_keys": list(child_data.model_dump(exclude_none=True).keys())
+        })
+
+        # Check subscription tier for multiple children
+        user = db.query(User).filter(User.id == current_user_id).first()
+        if user.subscription_tier == "free":
+            existing_children = db.query(Child).filter(Child.user_id == current_user_id).count()
+            if existing_children >= FREE_TIER_CHILD_LIMIT:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=PREMIUM_FEATURE_ERROR.format(feature=FEATURE_MULTIPLE_CHILDREN)
+                )
+
+        payload = child_data.model_dump(exclude_none=True)
+        # Ensure gender stored consistently in lowercase (validated already)
+        if payload.get("gender"):
+            payload["gender"] = payload["gender"].lower()
+
+        db_child = Child(**payload, user_id=current_user_id)
+        db.add(db_child)
+        db.commit()
+        db.refresh(db_child)
+        return db_child
+    except ValidationError:
+        logger.exception("Validation error in /children")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid child payload")
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Unhandled error in /children")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal error creating child")
 
 
 @router.get("/", response_model=List[ChildResponse])

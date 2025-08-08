@@ -63,7 +63,20 @@ class ChildResponse(BaseModel):
     def normalize_gender(cls, v):
         if v is None:
             return v
-        return str(v).lower()
+        v_norm = str(v).lower()
+        allowed = {"male", "female", "other"}
+        if v_norm not in allowed:
+            raise ValueError(f"gender must be one of {sorted(allowed)}")
+        return v_norm
+
+    @field_validator('date_of_birth')
+    @classmethod
+    def validate_dob_not_future(cls, v: date):
+        if v is None:
+            raise ValueError("date_of_birth is required")
+        if v > date.today():
+            raise ValueError("date_of_birth cannot be in the future")
+        return v
 
     @model_validator(mode='before')
     @classmethod
