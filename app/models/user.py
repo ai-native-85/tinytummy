@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime
+from sqlalchemy import Column, String, DateTime, text
 from sqlalchemy.dialects.postgresql import UUID, ENUM as PG_ENUM
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -26,6 +26,8 @@ class User(Base):
             values_callable=lambda e: [member.value for member in e],
         ),
         nullable=False,
+        default=SubscriptionTier.FREE,
+        server_default=text("'free'::subscription_tier"),
     )
     subscription_expires_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())

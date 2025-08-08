@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 import logging
 from sqlalchemy.orm import Session
 from app.database import get_db
+from pydantic import ValidationError
 from app.schemas.auth import UserCreate, UserLogin, UserResponse, Token
 from app.services.auth_service import AuthService
 from app.auth.jwt import get_current_user
@@ -14,20 +15,25 @@ def register(user_data: UserCreate, db: Session = Depends(get_db)):
     """Register a new user"""
     logger = logging.getLogger(__name__)
     try:
-        logger.info("Register endpoint called", extra={"email": user_data.email})
+        # Log raw input defensively (avoid printing password)
+        safe_email = getattr(user_data, "email", None)
+        logger.info("Register endpoint called", extra={"email": safe_email})
+
+        # Service call
         auth_service = AuthService(db)
         user = auth_service.register_user(user_data)
+
         logger.info("User registered successfully", extra={"user_id": str(user.id), "email": user.email})
         return user
+    except ValidationError as ve:
+        logger.exception("Validation error in /auth/register")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=ve.errors())
     except HTTPException:
-        # Bubble up well-formed HTTP errors
+        logger.exception("HTTPException in /auth/register")
         raise
-    except Exception as e:
-        logger.error(f"Registration failed: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error during registration"
-        )
+    except Exception:
+        logger.exception("Unhandled error in /auth/register")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error during registration")
 
 
 @router.post("/login", response_model=Token)
