@@ -41,10 +41,11 @@ def main():
     token = r.json().get("access_token")
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
+    # Simulate Lovable frontend payload using "dob" alias
     payload = {
         "name": "Baby A",
-        "date_of_birth": "2023-01-01",
-        "gender": "male",
+        "dob": "2023-08-02",
+        "gender": "Male",
         "allergies": ["peanuts"],
         "dietary_restrictions": ["vegetarian"],
         "region": "US"

@@ -35,7 +35,11 @@ def create_child(
                 detail=PREMIUM_FEATURE_ERROR.format(feature=FEATURE_MULTIPLE_CHILDREN)
             )
     
-    db_child = Child(**child_data.dict(), user_id=current_user_id)
+    payload = child_data.dict()
+    # Ensure gender stored consistently in lowercase
+    if payload.get("gender"):
+        payload["gender"] = payload["gender"].lower()
+    db_child = Child(**payload, user_id=current_user_id)
     db.add(db_child)
     db.commit()
     db.refresh(db_child)

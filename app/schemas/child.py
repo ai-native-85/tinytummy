@@ -1,4 +1,6 @@
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, Field
+from pydantic.alias_generators import to_camel
+from pydantic import AliasChoices
 from typing import Optional, List
 from datetime import datetime, date
 from decimal import Decimal
@@ -7,7 +9,8 @@ import uuid
 
 class ChildCreate(BaseModel):
     name: str
-    date_of_birth: date
+    # Accept both `date_of_birth` and `dob` from clients
+    date_of_birth: date = Field(validation_alias=AliasChoices('date_of_birth', 'dob'))
     gender: Optional[str] = None
     weight_kg: Optional[Decimal] = None
     height_cm: Optional[Decimal] = None
@@ -55,3 +58,10 @@ class ChildResponse(BaseModel):
 
     class Config:
         from_attributes = True 
+
+    @field_validator('gender')
+    @classmethod
+    def normalize_gender(cls, v):
+        if v is None:
+            return v
+        return str(v).lower()
