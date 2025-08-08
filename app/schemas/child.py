@@ -1,6 +1,4 @@
-from pydantic import BaseModel, field_validator, Field
-from pydantic.alias_generators import to_camel
-from pydantic import AliasChoices
+from pydantic import BaseModel, field_validator, model_validator
 from typing import Optional, List
 from datetime import datetime, date
 from decimal import Decimal
@@ -9,8 +7,9 @@ import uuid
 
 class ChildCreate(BaseModel):
     name: str
-    # Accept both `date_of_birth` and `dob` from clients
-    date_of_birth: date = Field(validation_alias=AliasChoices('date_of_birth', 'dob'))
+    # Accept both `date_of_birth` and `dob` from clients via pre-processing
+    date_of_birth: date
+    dob: Optional[date] = None
     gender: Optional[str] = None
     weight_kg: Optional[Decimal] = None
     height_cm: Optional[Decimal] = None
@@ -57,7 +56,7 @@ class ChildResponse(BaseModel):
         return v
 
     class Config:
-        from_attributes = True 
+        from_attributes = True
 
     @field_validator('gender')
     @classmethod
@@ -65,3 +64,12 @@ class ChildResponse(BaseModel):
         if v is None:
             return v
         return str(v).lower()
+
+    @model_validator(mode='before')
+    @classmethod
+    def accept_dob_alias(cls, values: dict):
+        # If client sent `dob`, copy it into `date_of_birth` before validation
+        if isinstance(values, dict):
+            if values.get('date_of_birth') is None and values.get('dob') is not None:
+                values['date_of_birth'] = values['dob']
+        return values
