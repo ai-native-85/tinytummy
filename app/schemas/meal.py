@@ -13,6 +13,14 @@ class MealCreate(BaseModel):
     input_method: InputMethod
     raw_input: str
 
+    @field_validator('meal_type', 'input_method', mode='before')
+    @classmethod
+    def normalize_enums(cls, v):
+        # Accept values like "BREAKFAST" / "Text" by coercing to lowercase first
+        if isinstance(v, str):
+            return v.lower()
+        return v
+
 
 class MealAnalysisRequest(BaseModel):
     child_id: UUID4
