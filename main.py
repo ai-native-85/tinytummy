@@ -77,6 +77,7 @@ app.include_router(gamification_router)
 app.include_router(caregiver_router)
 app.include_router(sync_router)
 app.include_router(audio_router)
+app.include_router(nutrition_router)
 
 
 @app.get("/")
