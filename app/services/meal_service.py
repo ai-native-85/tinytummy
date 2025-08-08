@@ -91,9 +91,9 @@ class MealService:
                 if isinstance(meal_data.input_method, InputMethod)
                 else str(meal_data.input_method).lower()
             )
-            # Convert back to Enum to satisfy SQLAlchemy Enum column
-            mt = MealType(mt_str)
-            im = InputMethod(im_str)
+            # Use lowercase strings for DB storage
+            mt = mt_str
+            im = im_str
             try:
                 self.logger.info(
                     "normalized enums",
@@ -132,8 +132,8 @@ class MealService:
             self.logger.info(
                 "constructing Meal",
                 extra={
-                    "meal_type_for_db": getattr(mt, "value", str(mt)),
-                    "input_method_for_db": getattr(im, "value", str(im)),
+                    "meal_type_for_db": mt,
+                    "input_method_for_db": im,
                 },
             )
         except Exception:

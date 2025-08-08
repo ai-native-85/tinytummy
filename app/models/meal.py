@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Date, Numeric, ForeignKey, Text, Boolean, Enum
+from sqlalchemy import Column, String, DateTime, Date, Numeric, ForeignKey, Text, Boolean
 from sqlalchemy.dialects.postgresql import UUID, ARRAY, JSONB
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -25,10 +25,11 @@ class Meal(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, server_default=func.uuid_generate_v4())
     child_id = Column(UUID(as_uuid=True), ForeignKey("children.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    meal_type = Column(Enum(MealType), nullable=False)
+    # Store as plain text to avoid DB enum constraint issues; validated in app layer
+    meal_type = Column(String(32), nullable=False)
     meal_time = Column(DateTime(timezone=True), nullable=False)
     meal_date = Column(Date, nullable=True)  # Populated by trigger
-    input_method = Column(Enum(InputMethod), nullable=False)
+    input_method = Column(String(32), nullable=False)
     raw_input = Column(Text, nullable=False)
     gpt_analysis = Column(JSONB, nullable=False)
     food_items = Column(ARRAY(String), nullable=False)
