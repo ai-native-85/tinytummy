@@ -1,5 +1,6 @@
 import json
 from datetime import datetime
+import logging
 from typing import Dict, Any, List
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -17,6 +18,7 @@ class MealService:
     def __init__(self, db: Session):
         self.db = db
         self.openai_client = OpenAI(api_key=settings.openai_api_key)
+        self.logger = logging.getLogger(__name__)
 
     def analyze_meal_with_gpt(self, raw_input: str, child: Child) -> Dict[str, Any]:
         """Analyze meal using GPT-4 and return nutrition data"""
@@ -61,6 +63,51 @@ class MealService:
 
     def create_meal(self, meal_data: MealCreate, user_id: str) -> Meal:
         """Create a new meal with GPT-4 analysis"""
+        # Log raw inbound values/types
+        try:
+            self.logger.info(
+                "create_meal called",
+                extra={
+                    "raw_meal_type": str(meal_data.meal_type),
+                    "raw_input_method": str(meal_data.input_method),
+                    "types": {
+                        "meal_type": str(type(meal_data.meal_type)),
+                        "input_method": str(type(meal_data.input_method)),
+                    },
+                },
+            )
+        except Exception:
+            pass
+
+        # Defensive normalization that works for both Enum and string inputs
+        try:
+            mt_str = (
+                meal_data.meal_type.value.lower()
+                if isinstance(meal_data.meal_type, MealType)
+                else str(meal_data.meal_type).lower()
+            )
+            im_str = (
+                meal_data.input_method.value.lower()
+                if isinstance(meal_data.input_method, InputMethod)
+                else str(meal_data.input_method).lower()
+            )
+            # Convert back to Enum to satisfy SQLAlchemy Enum column
+            mt = MealType(mt_str)
+            im = InputMethod(im_str)
+            try:
+                self.logger.info(
+                    "normalized enums",
+                    extra={
+                        "normalized_meal_type": mt.value,
+                        "normalized_input_method": im.value,
+                    },
+                )
+            except Exception:
+                pass
+        except Exception:
+            # If normalization fails, fall back to original (will 422/500 upstream if invalid)
+            mt = meal_data.meal_type
+            im = meal_data.input_method
         
         # Get child and verify ownership
         child = self.db.query(Child).filter(
@@ -81,12 +128,22 @@ class MealService:
         nutrition_data = gpt_analysis.get("nutrition_breakdown", {})
         
         # Create meal record
+        try:
+            self.logger.info(
+                "constructing Meal",
+                extra={
+                    "meal_type_for_db": getattr(mt, "value", str(mt)),
+                    "input_method_for_db": getattr(im, "value", str(im)),
+                },
+            )
+        except Exception:
+            pass
         db_meal = Meal(
             child_id=meal_data.child_id,
             user_id=user_id,
-            meal_type=meal_data.meal_type,
+            meal_type=mt,
             meal_time=meal_data.meal_time,
-            input_method=meal_data.input_method,
+            input_method=im,
             raw_input=meal_data.raw_input,
             gpt_analysis=gpt_analysis,
             food_items=gpt_analysis.get("detected_foods", []),
