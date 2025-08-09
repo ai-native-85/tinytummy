@@ -22,6 +22,20 @@ class MealCreate(BaseModel):
         return v
 
 
+class MealPatch(BaseModel):
+    meal_time: Optional[datetime] = None
+    meal_type: Optional[MealType] = None
+    description: Optional[str] = None
+    raw_input: Optional[str] = None
+
+    @field_validator('meal_type', mode='before')
+    @classmethod
+    def normalize_meal_type(cls, v):
+        if isinstance(v, str):
+            return v.lower()
+        return v
+
+
 class MealAnalysisRequest(BaseModel):
     child_id: UUID4
     meal_type: MealType
@@ -76,4 +90,4 @@ class MealTrendResponse(BaseModel):
     daily_calories: Optional[Decimal] = None
     daily_protein: Optional[Decimal] = None
     daily_iron: Optional[Decimal] = None
-    meal_count: int 
+    meal_count: int

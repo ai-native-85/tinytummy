@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
-from app.schemas.meal import MealCreate, MealResponse, MealTrendResponse
+from app.schemas.meal import MealCreate, MealPatch, MealResponse, MealTrendResponse
 from app.services.meal_service import MealService
 from app.auth.jwt import get_current_user
 from app.utils.responses import sync_response
@@ -62,7 +62,7 @@ def get_meals_by_child(
     return meals
 
 
-@router.get("/trends/{child_id}", response_model=List[MealTrendResponse])
+@router.get("/trends/{child_id}")
 def get_meal_trends(
     child_id: str,
     days: int = DEFAULT_TREND_DAYS,
@@ -126,12 +126,13 @@ def get_meal_trends(
         score = int(score_map.get(cur, 0) or 0)
         out.append({"date": cur.isoformat(), "totals": totals, "score": score})
         cur += timedelta(days=1)
+    logger.info("[trends] child=%s start=%s end=%s days=%s", child_id, start_date.isoformat(), end_date.isoformat(), days)
     return {"child_id": child_id, "start_date": start_date.isoformat(), "end_date": end_date.isoformat(), "days": out}
 
 @router.patch("/{meal_id}", response_model=MealResponse)
 def edit_meal(
     meal_id: str,
-    payload: dict,
+    payload: MealPatch,
     current_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -142,20 +143,22 @@ def edit_meal(
     old_day = getattr(meal, "meal_date", None) or meal.meal_time.date()
     # Apply partial updates
     import dateutil.parser
-    if "meal_time" in payload:
+    data = payload.model_dump(exclude_unset=True)
+    if "meal_time" in data:
         try:
-            meal.meal_time = dateutil.parser.isoparse(payload["meal_time"])
+            meal.meal_time = dateutil.parser.isoparse(data["meal_time"]) if isinstance(data["meal_time"], str) else data["meal_time"]
         except Exception:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid meal_time")
-    if "meal_type" in payload:
-        meal.meal_type = str(payload["meal_type"]).lower()
-    if "raw_input" in payload:
-        meal.raw_input = payload["raw_input"]
-    if "description" in payload:
-        meal.notes = payload["description"]
+    if "meal_type" in data:
+        meal.meal_type = str(data["meal_type"]).lower()
+    if "raw_input" in data:
+        meal.raw_input = data["raw_input"]
+    if "description" in data:
+        meal.notes = data["description"]
     db.commit(); db.refresh(meal)
     new_day = getattr(meal, "meal_date", None) or meal.meal_time.date()
     try:
+        logger.info("[meals] patch meal_id=%s old_day=%s new_day=%s recompute=%s", meal_id, old_day, new_day, [old_day] + ([new_day] if new_day != old_day else []))
         recompute_for_day(db, current_user_id, str(meal.child_id), old_day)
         if new_day != old_day:
             recompute_for_day(db, current_user_id, str(meal.child_id), new_day)
@@ -177,10 +180,11 @@ def delete_meal(
     child_id = str(meal.child_id)
     db.delete(meal); db.commit()
     try:
+        logger.info("[meals] delete meal_id=%s day=%s recompute=true", meal_id, day)
         recompute_for_day(db, current_user_id, child_id, day)
     except Exception:
         logger.warning("[meals] recompute after delete failed", exc_info=True)
-    return {"deleted": True}
+    return {"deleted": True, "id": meal_id}
 
 
 @router.post("/batch-sync")
