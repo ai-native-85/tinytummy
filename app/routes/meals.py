@@ -62,6 +62,51 @@ def get_meals_by_child(
     return meals
 
 
+@router.get("/recent/{child_id}")
+def get_recent_meals(
+    child_id: str,
+    limit: int = DEFAULT_MEAL_LIMIT,
+    before: str | None = None,
+    current_user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return recent meals for a child, sorted by meal_time desc, with optional pagination via before (exclusive)."""
+    from app.models.child import Child
+    from app.models.meal import Meal
+    # Ownership
+    child = db.query(Child).filter(Child.id == child_id, Child.user_id == current_user_id).first()
+    if not child:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Child not found")
+
+    q = db.query(Meal).filter(Meal.child_id == child_id, Meal.user_id == current_user_id)
+    if before:
+        try:
+            from datetime import datetime as _dt
+            from dateutil import parser as _p
+            ts = _p.isoparse(before) if not isinstance(before, str) else _p.isoparse(before)
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid before timestamp")
+        q = q.filter(Meal.meal_time < ts)
+    rows = q.order_by(Meal.meal_time.desc()).limit(max(1, min(100, int(limit)))).all()
+    out = []
+    for m in rows:
+        out.append({
+            "id": str(m.id),
+            "meal_time": m.meal_time,
+            "meal_date": getattr(m, "meal_date", None),
+            "meal_type": m.meal_type,
+            "description": getattr(m, "notes", None),
+            "calories": float(m.calories) if m.calories is not None else None,
+            "protein_g": float(m.protein_g) if m.protein_g is not None else None,
+            "fiber_g": float(m.fiber_g) if m.fiber_g is not None else None,
+            "iron_mg": float(m.iron_mg) if m.iron_mg is not None else None,
+            "calcium_mg": float(m.calcium_mg) if m.calcium_mg is not None else None,
+            "vitamin_c_mg": float(m.vitamin_c_mg) if m.vitamin_c_mg is not None else None,
+            "vitamin_d_iu": float(m.vitamin_d_iu) if m.vitamin_d_iu is not None else None,
+            "zinc_mg": float(m.zinc_mg) if m.zinc_mg is not None else None,
+        })
+    return out
+
 @router.get("/trends/{child_id}")
 def get_meal_trends(
     child_id: str,

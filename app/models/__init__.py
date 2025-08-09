@@ -8,6 +8,7 @@ from .gamification import Gamification, Badge, UserBadge
 from .caregiver import CaregiverLink
 from .nutrition import NutritionGuideline
 from .sync import OfflineSync
+from .targets import ChildTargets
 
 __all__ = [
     "User",
@@ -22,5 +23,6 @@ __all__ = [
     "UserBadge",
     "CaregiverLink",
     "NutritionGuideline",
-    "OfflineSync"
+    "OfflineSync",
+    "ChildTargets",
 ] 

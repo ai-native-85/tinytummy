@@ -8,6 +8,7 @@ from app.schemas.child import ChildCreate, ChildUpdate, ChildResponse
 from app.models.child import Child
 from app.auth.jwt import get_current_user
 from app.models.user import User
+from app.models.targets import ChildTargets
 from app.utils.constants import (
     CHILD_NOT_FOUND_ERROR, 
     FEATURE_MULTIPLE_CHILDREN,
@@ -124,6 +125,40 @@ def update_child(
     db.refresh(child)
     return child
 
+
+@router.put("/{child_id}/targets")
+def put_child_targets(
+    child_id: str,
+    payload: dict,
+    current_user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Override default guideline targets for a child."""
+    child = db.query(Child).filter(Child.id == child_id, Child.user_id == current_user_id).first()
+    if not child:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=CHILD_NOT_FOUND_ERROR)
+    ct = db.query(ChildTargets).filter(ChildTargets.child_id == child_id, ChildTargets.user_id == current_user_id).first()
+    if not ct:
+        ct = ChildTargets(child_id=child_id, user_id=current_user_id, overrides={})
+        db.add(ct)
+    # Basic validation: only allow numeric values
+    overrides = {k: float(v) for k, v in (payload or {}).items() if isinstance(v, (int, float))}
+    ct.overrides = overrides
+    db.commit(); db.refresh(ct)
+    return {"child_id": child_id, "overrides": ct.overrides}
+
+
+@router.get("/{child_id}/targets")
+def get_child_targets(
+    child_id: str,
+    current_user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    child = db.query(Child).filter(Child.id == child_id, Child.user_id == current_user_id).first()
+    if not child:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=CHILD_NOT_FOUND_ERROR)
+    ct = db.query(ChildTargets).filter(ChildTargets.child_id == child_id, ChildTargets.user_id == current_user_id).first()
+    return {"child_id": child_id, "overrides": (ct.overrides if ct else {})}
 
 @router.delete("/{child_id}")
 def delete_child(

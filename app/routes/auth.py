@@ -54,3 +54,14 @@ def get_current_user_info(current_user_id: str = Depends(get_current_user), db: 
             detail="User not found"
         )
     return user 
+
+
+@router.get("/account/entitlements")
+def get_entitlements(current_user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
+    from app.models.user import User
+    user = db.query(User).filter(User.id == current_user_id).first()
+    plan = user.subscription_tier if user and user.subscription_tier else "free"
+    features = ["basic-logging", "gamification", "trends"]
+    if plan == "premium":
+        features += ["multi-child", "plans", "caregivers"]
+    return {"plan": plan, "features": features}

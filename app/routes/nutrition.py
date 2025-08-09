@@ -7,6 +7,7 @@ from app.database import get_db
 from app.auth.jwt import get_current_user
 from app.schemas.nutrition import NutritionTargetsResponse, DailyTotalsResponse
 from app.models.child import Child
+from app.models.targets import ChildTargets
 from app.models.meal import Meal
 from sqlalchemy import func
 
@@ -30,6 +31,11 @@ def get_nutrition_targets(child_id: str, current_user_id: str = Depends(get_curr
 
     age_months = _calc_age_months(child.date_of_birth)
     region = child.region or "US"
+
+    # Prefer per-child overrides if present
+    ct = db.query(ChildTargets).filter(ChildTargets.child_id == child_id, ChildTargets.user_id == current_user_id).first()
+    if ct and ct.overrides:
+        return NutritionTargetsResponse(age_months=age_months, region=region, targets={k: float(v) for k, v in ct.overrides.items()})
 
     # Simple placeholder mapping. In a fuller version, query nutrition_guidelines table
     # for the closest matching age band by region and emit only defined keys.
