@@ -6,7 +6,7 @@ from app.database import get_db
 from app.auth.jwt import get_current_user
 from sqlalchemy.exc import SQLAlchemyError
 import importlib
-from sqlalchemy import func as sfunc, case
+from sqlalchemy import func as sfunc, case, text
 
 router = APIRouter(prefix="/gamification", tags=["Gamification"])
 
@@ -157,4 +157,63 @@ def gamification_summary(
     }
     if response is not None:
         response.headers["X-Handler-Time-ms"] = str(int((time.perf_counter() - t0) * 1000))
+    return out
+
+
+@router.get("/__diag", tags=["Gamification"])
+def gam_diag(
+    child_id: str,
+    day: date_cls = Query(...),
+    current_user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.models.child import Child
+    child = db.query(Child).filter(Child.id == child_id, Child.user_id == current_user_id).first()
+    if not child:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Child not found")
+
+    out = {}
+    ds = db.execute(
+        text("""
+        SELECT score, components_json
+        FROM gam_daily_score
+        WHERE user_id=:u AND child_id=:c AND date=:d
+        """),
+        {"u": str(current_user_id), "c": str(child_id), "d": day},
+    ).mappings().first()
+    out["daily_score_row"] = dict(ds) if ds else None
+
+    sums = db.execute(
+        text("""
+        SELECT
+          COALESCE(SUM(CASE WHEN date = :d THEN points ELSE 0 END), 0) AS points_today,
+          COALESCE(SUM(points), 0) AS points_total
+        FROM gam_points_ledger
+        WHERE user_id = :u AND child_id = :c
+        """),
+        {"u": str(current_user_id), "c": str(child_id), "d": day},
+    ).mappings().first()
+    out["points_sums"] = dict(sums) if sums else None
+
+    rows = db.execute(
+        text("""
+        SELECT date, reason, points
+        FROM gam_points_ledger
+        WHERE user_id=:u AND child_id=:c
+        ORDER BY date ASC, reason ASC
+        """),
+        {"u": str(current_user_id), "c": str(child_id)},
+    ).mappings().all()
+    out["points_rows"] = [dict(r) for r in rows]
+
+    st = db.execute(
+        text("""
+        SELECT current_length, best_length, last_active_date
+        FROM gam_streak
+        WHERE user_id=:u AND child_id=:c
+        """),
+        {"u": str(current_user_id), "c": str(child_id)},
+    ).mappings().first()
+    out["streak_row"] = dict(st) if st else None
+
     return out
