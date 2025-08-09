@@ -58,12 +58,14 @@ def create_app() -> FastAPI:
     except Exception:
         pass
 
-    # Gamification
+    # Gamification (with explicit diagnostics)
     try:
+        logger.info("Including gamification router…")
         from app.routes.gamification import router as gamification_router
         app.include_router(gamification_router)
-    except Exception:
-        pass
+        logger.info("✅ Gamification router included")
+    except Exception as e:
+        logger.exception("❌ Failed to include gamification router", exc_info=e)
 
     # Core routes (best-effort include)
     for mod, attr in [
