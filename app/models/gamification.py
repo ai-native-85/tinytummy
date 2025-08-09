@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, ForeignKey, Integer, Date
+from sqlalchemy import Column, String, DateTime, ForeignKey, Integer, Date, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy import Enum
 from sqlalchemy.sql import func
@@ -62,3 +62,53 @@ class UserBadge(Base):
     # Relationships
     user = relationship("User", back_populates="user_badges")
     badge = relationship("Badge", back_populates="user_badges") 
+
+
+# --- Child-focused tables ---
+
+class GamDailyScore(Base):
+    __tablename__ = "gam_daily_score"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=func.uuid_generate_v4())
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    child_id = Column(UUID(as_uuid=True), ForeignKey("children.id", ondelete="CASCADE"), nullable=False)
+    date = Column(Date, nullable=False)
+    score = Column(Integer, nullable=False, default=0)
+    components_json = Column(JSONB, default={})
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "child_id", "date", name="uq_gam_daily_score_ucd"),
+    )
+
+
+class GamPointsLedger(Base):
+    __tablename__ = "gam_points_ledger"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=func.uuid_generate_v4())
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    child_id = Column(UUID(as_uuid=True), ForeignKey("children.id", ondelete="CASCADE"), nullable=False)
+    date = Column(Date, nullable=False)
+    points = Column(Integer, nullable=False, default=0)
+    reason = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "child_id", "date", "reason", name="uq_gam_points_ledger_ucdr"),
+    )
+
+
+class GamStreak(Base):
+    __tablename__ = "gam_streak"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=func.uuid_generate_v4())
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    child_id = Column(UUID(as_uuid=True), ForeignKey("children.id", ondelete="CASCADE"), nullable=False)
+    current_length = Column(Integer, nullable=False, default=0)
+    best_length = Column(Integer, nullable=False, default=0)
+    last_active_date = Column(Date, nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "child_id", name="uq_gam_streak_uc"),
+    )

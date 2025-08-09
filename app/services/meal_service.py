@@ -217,4 +217,4 @@ class MealService:
         age_months = (today.year - date_of_birth.year) * 12 + (today.month - date_of_birth.month)
         if today.day < date_of_birth.day:
             age_months -= 1
-        return max(0, age_months)  # Ensure non-negative 
+        return max(0, age_months)  # Ensure non-negative                                                                                    
