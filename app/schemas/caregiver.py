@@ -1,36 +1,50 @@
-from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from pydantic import BaseModel, EmailStr
+from typing import Optional, List, Literal
+from uuid import UUID
 from datetime import datetime
 
 
 class CaregiverInviteRequest(BaseModel):
-    child_id: str
-    invitee_email: str
-    role: Optional[str] = "viewer"
+    child_id: UUID
+    invitee_email: EmailStr
+    role: Literal["viewer","editor"] = "viewer"
+
+
+class CaregiverAcceptRequest(BaseModel):
+    token: UUID
+
+
+class CaregiverDeclineRequest(BaseModel):
+    token: UUID
+
+
+class CaregiverRevokeRequest(BaseModel):
+    invite_id: UUID
+
+
+class CaregiverResponse(BaseModel):
+    id: UUID
+    child_id: UUID
+    user_id: UUID
+    email: Optional[EmailStr] = None
+    role: str
+    added_at: datetime
 
 
 class CaregiverInviteResponse(BaseModel):
-    id: str
-    child_id: str
-    inviter_user_id: str
-    invitee_email: str
+    id: UUID
+    child_id: UUID
+    invitee_email: EmailStr
     role: str
-    status: str
-    token: str
+    status: Literal["pending","accepted","declined","revoked"]
+    token: Optional[UUID] = None
     created_at: datetime
-    updated_at: datetime
-
-    class Config:
-        from_attributes = True
+    expires_at: Optional[datetime] = None
 
 
-class CaregiverAccessResponse(BaseModel):
-    id: str
-    child_id: str
-    user_id: str
-    role: str
-    created_at: datetime
-    updated_at: datetime
+class CaregiverListResponse(BaseModel):
+    caregivers: List[CaregiverResponse]
 
-    class Config:
-        from_attributes = True
+
+class CaregiverInviteListResponse(BaseModel):
+    invites: List[CaregiverInviteResponse]

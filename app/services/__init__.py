@@ -1,7 +1,7 @@
 from .auth_service import AuthService
 from .meal_service import MealService
 from .rag_service import RAGService
-from .caregiver_service import CaregiverService
+# Avoid importing CaregiverService here to prevent eager import failures
 from .chat_service import ChatService
 from .plan_service import PlanService
 from .report_service import ReportService
@@ -12,10 +12,10 @@ __all__ = [
     "AuthService",
     "MealService", 
     "RAGService",
-    "CaregiverService",
+    # "CaregiverService",  # intentionally not exported to avoid eager import
     "ChatService",
     "PlanService",
     "ReportService",
     "GamificationService",
     "SyncService"
-] 
+]

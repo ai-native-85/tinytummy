@@ -6,7 +6,11 @@ from app.database import get_db
 from app.schemas.caregiver import (
     CaregiverInviteRequest,
     CaregiverInviteResponse,
-    CaregiverAccessResponse,
+    CaregiverListResponse,
+    CaregiverInviteListResponse,
+    CaregiverAcceptRequest,
+    CaregiverDeclineRequest,
+    CaregiverRevokeRequest,
 )
 from app.models.caregiver_access import CaregiverInvite, ChildCaregiver
 from app.models.child import Child
@@ -22,7 +26,7 @@ def caregivers_ping():
     return {"ok": True}
 
 
-@router.get("/{child_id}", response_model=List[CaregiverAccessResponse])
+@router.get("/{child_id}", response_model=CaregiverListResponse)
 def list_caregivers(child_id: str, current_user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
         # owner check
@@ -30,20 +34,30 @@ def list_caregivers(child_id: str, current_user_id: str = Depends(get_current_us
         if not child:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Child not found")
         rows = db.query(ChildCaregiver).filter(ChildCaregiver.child_id == child_id).all()
-        return rows
+        items = []
+        for r in rows:
+            items.append({
+                "id": str(r.id),
+                "child_id": str(r.child_id),
+                "user_id": str(r.user_id),
+                "email": None,
+                "role": r.role,
+                "added_at": r.created_at,
+            })
+        return {"caregivers": items}
     except Exception as e:
         logger.exception("[caregivers] list failed")
         raise HTTPException(status_code=503, detail="caregiver tables unavailable")
 
 
-@router.get("/invites/{child_id}")
+@router.get("/invites/{child_id}", response_model=CaregiverInviteListResponse)
 def list_invites(child_id: str, current_user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
         child = db.query(Child).filter(Child.id == child_id, Child.user_id == current_user_id).first()
         if not child:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Child not found")
         rows = db.query(CaregiverInvite).filter(CaregiverInvite.child_id == child_id).all()
-        return [{"id": str(r.id), "invitee_email": r.invitee_email, "role": r.role, "status": r.status, "token": str(r.token)} for r in rows]
+        return {"invites": [{"id": str(r.id), "child_id": str(r.child_id), "invitee_email": r.invitee_email, "role": r.role, "status": r.status, "token": str(r.token), "created_at": r.created_at, "expires_at": r.expires_at} for r in rows]}
     except Exception:
         logger.exception("[caregivers] invites list failed")
         raise HTTPException(status_code=503, detail="caregiver tables unavailable")
@@ -70,9 +84,9 @@ def invite_caregiver(req: CaregiverInviteRequest, current_user_id: str = Depends
 
 
 @router.post("/accept")
-def accept_invite(payload: dict, current_user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
+def accept_invite(payload: CaregiverAcceptRequest, current_user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
-        token = payload.get("token")
+        token = str(payload.token)
         if not token:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="token required")
         inv = db.query(CaregiverInvite).filter(CaregiverInvite.token == token, CaregiverInvite.status == "pending").first()
@@ -91,9 +105,9 @@ def accept_invite(payload: dict, current_user_id: str = Depends(get_current_user
 
 
 @router.post("/decline")
-def decline_invite(payload: dict, current_user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
+def decline_invite(payload: CaregiverDeclineRequest, current_user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
-        token = payload.get("token")
+        token = str(payload.token)
         if not token:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="token required")
         inv = db.query(CaregiverInvite).filter(CaregiverInvite.token == token, CaregiverInvite.status == "pending").first()
@@ -108,9 +122,9 @@ def decline_invite(payload: dict, current_user_id: str = Depends(get_current_use
 
 
 @router.post("/revoke")
-def revoke_invite(payload: dict, current_user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
+def revoke_invite(payload: CaregiverRevokeRequest, current_user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
-        invite_id = payload.get("invite_id")
+        invite_id = str(payload.invite_id)
         if not invite_id:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invite_id required")
         inv = db.query(CaregiverInvite).filter(CaregiverInvite.id == invite_id).first()
