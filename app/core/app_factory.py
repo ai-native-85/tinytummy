@@ -1,12 +1,43 @@
 import os
+import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
+from sqlalchemy import text
+try:
+    from app.database import engine as SYNC_ENGINE
+except Exception:
+    SYNC_ENGINE = None
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("tinytummy")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: DB ping (sync engine)
+    try:
+        if SYNC_ENGINE is not None:
+            with SYNC_ENGINE.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            logger.info("✅ Database connected (sync engine)")
+        else:
+            logger.warning("DB engine not available; skipping ping")
+    except Exception as e:
+        logger.exception("❌ Database ping failed")
+    yield
+    # Shutdown: no-op
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="TinyTummy API", description="AI-powered Baby Nutrition Tracker API", version="1.0.0")
+    app = FastAPI(
+        title="TinyTummy API",
+        description="AI-powered Baby Nutrition Tracker API",
+        version="1.0.0",
+        lifespan=lifespan,
+    )
 
     # Middleware (match existing behavior broadly)
     app.add_middleware(
@@ -70,6 +101,15 @@ def create_app() -> FastAPI:
     @app.get("/health")
     def health():
         return {"status": "healthy", "service": "tinytummy-api"}
+
+    @app.get("/dbping")
+    def dbping():
+        if SYNC_ENGINE is None:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail="No DB engine")
+        with SYNC_ENGINE.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"ok": True, "mode": "sync"}
 
     return app
 
