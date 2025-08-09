@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
 from datetime import datetime, date as date_cls
+from datetime import date as _date
+from uuid import UUID
 from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
@@ -100,66 +102,75 @@ def gam_diag(
 
 @router.get("/__dbsanity", tags=["Gamification"])
 def gam_dbsanity(
-    child_id: str,
-    day: date_cls = Query(...),
+    child_id: UUID,
+    day: _date = Query(...),
     current_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    import logging, uuid
-    logger = logging.getLogger("tinytummy")
-    try:
-        child_uuid = str(uuid.UUID(str(child_id)))
-    except Exception:
-        child_uuid = str(child_id)
-    try:
-        user_uuid = str(uuid.UUID(str(current_user_id)))
-    except Exception:
-        user_uuid = str(current_user_id)
-
+    # Ownership check (same approach as summary)
     from app.models.child import Child
-    child = db.query(Child).filter(Child.id == child_uuid, Child.user_id == user_uuid).first()
+    child = db.query(Child).filter(Child.id == str(child_id), Child.user_id == current_user_id).first()
     if not child:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Child not found")
 
-    # Masked URL: show db name and host only
+    # Engine / URL
     try:
-        from app.database import engine as SYNC_ENGINE
-        url = str(SYNC_ENGINE.url)
+        eng = db.get_bind()
+        url = getattr(eng, "url", None)
+        raw_url = str(url) if url else "unknown"
     except Exception:
-        url = "unknown"
-    masked = url
-    # current_schema and search_path
-    cs = db.execute(text("SELECT current_schema() AS s"))).mappings().first()
-    sp = db.execute(text("SHOW search_path"))).mappings().first()
+        raw_url = "unknown"
+    masked_url = raw_url
 
-    # Table existence and counts
-    def exists(table: str) -> bool:
-        r = db.execute(text("""
-            SELECT 1 FROM information_schema.tables
-            WHERE table_name=:t
-        """), {"t": table}).first()
-        return bool(r)
+    # Schema info
+    cs = db.execute(text("SELECT current_schema() AS s")).mappings().first()
+    current_schema = cs["s"] if cs else None
+    sp = db.execute(text("SHOW search_path")).mappings().first()
+    search_path = next(iter(sp.values())) if sp else None
+
+    def table_exists(name: str) -> bool:
+        q = text(
+            """
+            SELECT EXISTS (
+              SELECT 1 FROM information_schema.tables
+              WHERE table_schema = current_schema()
+                AND table_name = :t
+            ) AS exists
+            """
+        )
+        r = db.execute(q, {"t": name}).mappings().first()
+        return bool(r["exists"]) if r else False
+
+    exists_points = table_exists("gam_points_ledger")
+    exists_daily = table_exists("gam_daily_score")
+    exists_streak = table_exists("gam_streak")
+
+    def small_rows(name: str):
+        try:
+            r = db.execute(text(f"SELECT * FROM {name} ORDER BY 1 LIMIT 3")).mappings().all()
+            return [dict(x) for x in r]
+        except Exception as e:
+            return [{"error": str(e)}]
 
     counts = {}
-    samples = {}
-    for t in ["gam_points_ledger", "gam_daily_score", "gam_streak"]:
+    for name in ("gam_points_ledger", "gam_daily_score", "gam_streak"):
         try:
-            c = db.execute(text(f"SELECT COUNT(*) AS c FROM {t}")).mappings().first()
-            counts[t] = int((c or {}).get("c", 0))
-            rows = db.execute(text(f"SELECT * FROM {t} ORDER BY 1 DESC LIMIT 3")).mappings().all()
-            samples[t] = [dict(r) for r in rows]
-        except Exception:
-            counts[t] = None
-            samples[t] = []
+            c = db.execute(text(f"SELECT COUNT(*) AS c FROM {name}")).mappings().first()
+            counts[name] = int(c["c"]) if c and "c" in c else 0
+        except Exception as e:
+            counts[name] = f"ERR: {e}"
 
-    return {
-        "engine_url": masked,
-        "current_schema": (cs or {}).get("s") if cs else None,
-        "search_path": (sp or {}).get("search_path") if sp else None,
-        "tables_exist": {t: exists(t) for t in ["gam_points_ledger", "gam_daily_score", "gam_streak"]},
-        "counts": counts,
-        "samples": samples,
+    out = {
+        "engine_url": masked_url,
+        "current_schema": current_schema,
+        "search_path": search_path,
+        "tables": {
+            "gam_points_ledger": {"exists": exists_points, "count": counts.get("gam_points_ledger"), "sample": small_rows("gam_points_ledger")},
+            "gam_daily_score": {"exists": exists_daily, "count": counts.get("gam_daily_score"), "sample": small_rows("gam_daily_score")},
+            "gam_streak": {"exists": exists_streak, "count": counts.get("gam_streak"), "sample": small_rows("gam_streak")},
+        },
     }
+    return out
 
 
 @router.get("/{user_id}")
