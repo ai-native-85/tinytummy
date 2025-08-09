@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, date, timedelta
 from typing import Dict, Tuple
 from sqlalchemy.orm import Session
-from sqlalchemy import func, case
+from sqlalchemy import func, case, text
 from sqlalchemy.exc import SQLAlchemyError
 import logging
 
@@ -134,10 +134,10 @@ def compute_daily_score(db: Session, user_id: str, child_id: str, day: date) -> 
             existing.score = total_score
             existing.components_json = component_scores
             db.commit()
-            logging.getLogger("tinytummy").debug("[gam] upsert daily_score", extra={"child_id": child_id, "date": day.isoformat(), "score": total_score})
+            logging.getLogger("tinytummy").info("[gam] upsert_daily_score user=%s child=%s day=%s score=%s", user_id, child_id, day, total_score)
     except SQLAlchemyError:
-        # Table may not exist yet; skip persistence but still return computed values
         db.rollback()
+        logging.getLogger("tinytummy").exception("[gam] WRITE_FAIL daily_score user=%s child=%s day=%s", user_id, child_id, day)
     return {"score": total_score, "components": component_scores}
 
 
@@ -209,17 +209,17 @@ def _insert_points_once(db: Session, user_id: str, child_id: str, day: date, poi
         if GPL:
             db.add(GPL(user_id=user_id, child_id=child_id, date=day, points=points, reason=reason))
         db.commit()
-        logging.getLogger("tinytummy").debug("[gam] points_awarded", extra={"child_id": child_id, "date": day.isoformat(), "points": points, "reason": reason})
+        logging.getLogger("tinytummy").info("[gam] points_insert user=%s child=%s day=%s reason=%s points=%s", user_id, child_id, day, reason, points)
         return points
     except SQLAlchemyError:
         db.rollback()
-        # Ledger table may not exist; pretend we awarded (ephemeral)
+        logging.getLogger("tinytummy").exception("[gam] WRITE_FAIL points_insert user=%s child=%s day=%s reason=%s", user_id, child_id, day, reason)
         return points
 
 
-def award_points(db: Session, user_id: str, child_id: str, day: date, daily_score: int) -> int:
+def award_points(db: Session, user_id: str, child_id: str, day: date, daily_score: int) -> tuple[int, list[str]]:
     awarded = 0
-    reasons = []
+    reasons: list[str] = []
     got = _insert_points_once(db, user_id, child_id, day, 10, "base")
     if got:
         awarded += got
@@ -234,8 +234,8 @@ def award_points(db: Session, user_id: str, child_id: str, day: date, daily_scor
         if got:
             awarded += got
             reasons.append("score90")
-    logging.getLogger("tinytummy").info("[gam] points_awarded", extra={"child_id": child_id, "day": day.isoformat(), "reasons": reasons, "points_awarded_today": awarded})
-    return awarded
+    logging.getLogger("tinytummy").info("[gam] points_awarded user=%s child=%s day=%s reasons=%s points_awarded_today=%s", user_id, child_id, day, reasons, awarded)
+    return awarded, reasons
 
 
 def _get_or_create_badge(db: Session, name: str, badge_type: BadgeType) -> Badge:
@@ -311,36 +311,57 @@ def recompute_for_day(db: Session, user_id: str, child_id: str, day: date) -> Di
     )
     logger.info("[gam] active_today user=%s child=%s day=%s active=%s", user_id, child_id, day, has_any)
 
-    daily = compute_daily_score(db, user_id, child_id, day)
-    streak = update_streak(db, user_id, child_id, day)
-    points_awarded = award_points(db, user_id, child_id, day, daily["score"])
-    maybe_award_badges(db, user_id, child_id, day, daily["score"], streak)
-
-    # Read-back points to confirm persistence
+    # Writes with diagnostics
     try:
-        row = db.query(
-            func.coalesce(func.sum(case((Meal.user_id == user_id, 0), else_=0)), 0)  # dummy to keep query structure stable
-        ).first()  # no-op to ensure session usable
-        sums = db.query(
-            func.coalesce(func.sum(case((getattr(_gm_module(), "GamPointsLedger").date == day, getattr(_gm_module(), "GamPointsLedger").points), else_=0)), 0).label("today"),
-            func.coalesce(func.sum(getattr(_gm_module(), "GamPointsLedger").points), 0).label("total"),
-        ).filter(
-            getattr(_gm_module(), "GamPointsLedger").user_id == user_id,
-            getattr(_gm_module(), "GamPointsLedger").child_id == child_id,
-        ).one()
-        today_sum = int(sums.today or 0)
-        total_sum = int(sums.total or 0)
+        daily = compute_daily_score(db, user_id, child_id, day)
+    except Exception:
+        logger.exception("[gam] WRITE_FAIL daily_score user=%s child=%s day=%s", user_id, child_id, day)
+        daily = {"score": 0, "components": {}}
+
+    try:
+        streak = update_streak(db, user_id, child_id, day)
+    except Exception:
+        logger.exception("[gam] WRITE_FAIL streak user=%s child=%s day=%s", user_id, child_id, day)
+        streak = {"current": 0, "best": 0}
+
+    try:
+        points_awarded, reasons = award_points(db, user_id, child_id, day, daily["score"])
+    except Exception:
+        logger.exception("[gam] WRITE_FAIL points user=%s child=%s day=%s", user_id, child_id, day)
+        points_awarded, reasons = 0, []
+
+    try:
+        maybe_award_badges(db, user_id, child_id, day, daily["score"], streak)
+    except Exception:
+        logger.exception("[gam] WRITE_FAIL badges user=%s child=%s day=%s", user_id, child_id, day)
+
+    # Read-back points to confirm persistence (raw SQL)
+    try:
+        sums = db.execute(
+            text(
+                """
+                SELECT
+                  COALESCE(SUM(CASE WHEN date = :d THEN points ELSE 0 END), 0) AS points_today,
+                  COALESCE(SUM(points), 0) AS points_total
+                FROM gam_points_ledger
+                WHERE user_id = :u AND child_id = :c
+                """
+            ),
+            {"u": str(user_id), "c": str(child_id), "d": day},
+        ).mappings().first()
+        today_sum = int((sums or {}).get("points_today", 0))
+        total_sum = int((sums or {}).get("points_total", 0))
         logger.info(
             "[gam] points_awarded user=%s child=%s day=%s reasons=%s readback_today=%s total=%s",
             user_id,
             child_id,
             day,
-            "logged",  # reasons already logged inside award_points; this is a readback log
+            reasons,
             today_sum,
             total_sum,
         )
     except Exception:
-        pass
+        logger.exception("[gam] READBACK_FAIL points user=%s child=%s day=%s", user_id, child_id, day)
 
     return {"score": daily["score"], "components": daily["components"], "streak": streak, "points_awarded_today": points_awarded}
 

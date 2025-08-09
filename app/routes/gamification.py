@@ -167,10 +167,22 @@ def gam_diag(
     current_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    import logging, uuid
+    logger = logging.getLogger("tinytummy")
+    # Normalize to UUID if model uses UUID
+    try:
+        child_uuid = str(uuid.UUID(str(child_id)))
+    except Exception:
+        child_uuid = str(child_id)
+    try:
+        user_uuid = str(uuid.UUID(str(current_user_id)))
+    except Exception:
+        user_uuid = str(current_user_id)
     from app.models.child import Child
-    child = db.query(Child).filter(Child.id == child_id, Child.user_id == current_user_id).first()
+    child = db.query(Child).filter(Child.id == child_uuid, Child.user_id == user_uuid).first()
     if not child:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Child not found")
+    logger.info("[diag] user=%s child=%s allowed", user_uuid, child_uuid)
 
     out = {}
     ds = db.execute(
@@ -179,7 +191,7 @@ def gam_diag(
         FROM gam_daily_score
         WHERE user_id=:u AND child_id=:c AND date=:d
         """),
-        {"u": str(current_user_id), "c": str(child_id), "d": day},
+        {"u": user_uuid, "c": child_uuid, "d": day},
     ).mappings().first()
     out["daily_score_row"] = dict(ds) if ds else None
 
@@ -191,7 +203,7 @@ def gam_diag(
         FROM gam_points_ledger
         WHERE user_id = :u AND child_id = :c
         """),
-        {"u": str(current_user_id), "c": str(child_id), "d": day},
+        {"u": user_uuid, "c": child_uuid, "d": day},
     ).mappings().first()
     out["points_sums"] = dict(sums) if sums else None
 
@@ -202,7 +214,7 @@ def gam_diag(
         WHERE user_id=:u AND child_id=:c
         ORDER BY date ASC, reason ASC
         """),
-        {"u": str(current_user_id), "c": str(child_id)},
+        {"u": user_uuid, "c": child_uuid},
     ).mappings().all()
     out["points_rows"] = [dict(r) for r in rows]
 
@@ -212,7 +224,7 @@ def gam_diag(
         FROM gam_streak
         WHERE user_id=:u AND child_id=:c
         """),
-        {"u": str(current_user_id), "c": str(child_id)},
+        {"u": user_uuid, "c": child_uuid},
     ).mappings().first()
     out["streak_row"] = dict(st) if st else None
 
