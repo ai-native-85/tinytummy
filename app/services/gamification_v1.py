@@ -167,13 +167,15 @@ def update_streak(db: Session, user_id: str, child_id: str, day: date) -> Dict:
         if has_any:
             if streak.last_active_date == day - timedelta(days=1):
                 streak.current_length += 1
+            elif streak.last_active_date == day:
+                streak.current_length = streak.current_length or 1
             else:
                 streak.current_length = 1
             streak.last_active_date = day
             if streak.current_length > streak.best_length:
                 streak.best_length = streak.current_length
         db.commit()
-        logging.getLogger("tinytummy").debug("[gam] streak", extra={"child_id": child_id, "current": streak.current_length if streak else 0, "best": streak.best_length if streak else 0, "last_active_date": streak.last_active_date.isoformat() if streak and streak.last_active_date else None})
+        logging.getLogger("tinytummy").info("[gam] streak", extra={"child_id": child_id, "day": day.isoformat(), "current": streak.current_length if streak else 0, "best": streak.best_length if streak else 0, "last_active_date": streak.last_active_date.isoformat() if streak and streak.last_active_date else None})
         return {"current": streak.current_length if streak else 0, "best": streak.best_length if streak else 0}
     except SQLAlchemyError:
         db.rollback()
@@ -217,11 +219,22 @@ def _insert_points_once(db: Session, user_id: str, child_id: str, day: date, poi
 
 def award_points(db: Session, user_id: str, child_id: str, day: date, daily_score: int) -> int:
     awarded = 0
-    awarded += _insert_points_once(db, user_id, child_id, day, 10, "base")
+    reasons = []
+    got = _insert_points_once(db, user_id, child_id, day, 10, "base")
+    if got:
+        awarded += got
+        reasons.append("base")
     if daily_score >= 70:
-        awarded += _insert_points_once(db, user_id, child_id, day, 10, "score70")
+        got = _insert_points_once(db, user_id, child_id, day, 10, "score70")
+        if got:
+            awarded += got
+            reasons.append("score70")
     if daily_score >= 90:
-        awarded += _insert_points_once(db, user_id, child_id, day, 20, "score90")
+        got = _insert_points_once(db, user_id, child_id, day, 20, "score90")
+        if got:
+            awarded += got
+            reasons.append("score90")
+    logging.getLogger("tinytummy").info("[gam] points_awarded", extra={"child_id": child_id, "day": day.isoformat(), "reasons": reasons, "points_awarded_today": awarded})
     return awarded
 
 

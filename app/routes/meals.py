@@ -89,6 +89,25 @@ def batch_sync_meals(
         try:
             meal = meal_service.create_meal(meal_data, current_user_id)
             synced_meals.append(meal)
+            # After each commit, recompute for that meal's date (UTC date part)
+            meal_time = getattr(meal, "meal_time", None) or datetime.now(tz=timezone.utc)
+            try:
+                meal_time_utc = meal_time.astimezone(timezone.utc)
+            except Exception:
+                meal_time_utc = meal_time
+            meal_day = getattr(meal, "meal_date", None) or meal_time_utc.date()
+            try:
+                logger.info(
+                    "[meals] recompute gamification",
+                    extra={
+                        "child_id": str(meal.child_id),
+                        "meal_time": meal_time_utc.isoformat() if hasattr(meal_time_utc, "isoformat") else str(meal_time_utc),
+                        "meal_date_used": meal_day.isoformat(),
+                    },
+                )
+                recompute_for_day(db, current_user_id, str(meal.child_id), meal_day)
+            except Exception:
+                logger.warning("[meals] recompute failed for batch item", exc_info=True)
         except Exception as e:
             # Log error but continue with other meals
             continue
