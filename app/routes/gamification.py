@@ -98,6 +98,70 @@ def gam_diag(
     return out
 
 
+@router.get("/__dbsanity", tags=["Gamification"])
+def gam_dbsanity(
+    child_id: str,
+    day: date_cls = Query(...),
+    current_user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    import logging, uuid
+    logger = logging.getLogger("tinytummy")
+    try:
+        child_uuid = str(uuid.UUID(str(child_id)))
+    except Exception:
+        child_uuid = str(child_id)
+    try:
+        user_uuid = str(uuid.UUID(str(current_user_id)))
+    except Exception:
+        user_uuid = str(current_user_id)
+
+    from app.models.child import Child
+    child = db.query(Child).filter(Child.id == child_uuid, Child.user_id == user_uuid).first()
+    if not child:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Child not found")
+
+    # Masked URL: show db name and host only
+    try:
+        from app.database import engine as SYNC_ENGINE
+        url = str(SYNC_ENGINE.url)
+    except Exception:
+        url = "unknown"
+    masked = url
+    # current_schema and search_path
+    cs = db.execute(text("SELECT current_schema() AS s"))).mappings().first()
+    sp = db.execute(text("SHOW search_path"))).mappings().first()
+
+    # Table existence and counts
+    def exists(table: str) -> bool:
+        r = db.execute(text("""
+            SELECT 1 FROM information_schema.tables
+            WHERE table_name=:t
+        """), {"t": table}).first()
+        return bool(r)
+
+    counts = {}
+    samples = {}
+    for t in ["gam_points_ledger", "gam_daily_score", "gam_streak"]:
+        try:
+            c = db.execute(text(f"SELECT COUNT(*) AS c FROM {t}")).mappings().first()
+            counts[t] = int((c or {}).get("c", 0))
+            rows = db.execute(text(f"SELECT * FROM {t} ORDER BY 1 DESC LIMIT 3")).mappings().all()
+            samples[t] = [dict(r) for r in rows]
+        except Exception:
+            counts[t] = None
+            samples[t] = []
+
+    return {
+        "engine_url": masked,
+        "current_schema": (cs or {}).get("s") if cs else None,
+        "search_path": (sp or {}).get("search_path") if sp else None,
+        "tables_exist": {t: exists(t) for t in ["gam_points_ledger", "gam_daily_score", "gam_streak"]},
+        "counts": counts,
+        "samples": samples,
+    }
+
+
 @router.get("/{user_id}")
 def get_gamification(
     user_id: str,
