@@ -1,0 +1,267 @@
+from __future__ import annotations
+
+from datetime import datetime, date, timedelta
+from typing import Dict, Tuple
+from sqlalchemy.orm import Session
+from sqlalchemy import func
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.models.child import Child
+from app.models.meal import Meal
+from app.models.gamification import (
+    GamDailyScore,
+    GamPointsLedger,
+    GamStreak,
+    Badge,
+    UserBadge,
+    BadgeType,
+)
+
+
+def _calc_age_months(dob: date) -> int:
+    today = datetime.utcnow().date()
+    months = (today.year - dob.year) * 12 + (today.month - dob.month)
+    if today.day < dob.day:
+        months -= 1
+    return max(0, months)
+
+
+def _targets_for_age_region(age_months: int, region: str) -> Dict[str, float]:
+    # Placeholder bands; align with nutrition.routes mapping
+    if age_months <= 12:
+        return {"calories": 700, "protein_g": 11, "iron_mg": 11, "vitamin_d_iu": 400}
+    if age_months <= 36:
+        return {
+            "calories": 1000,
+            "protein_g": 13,
+            "fiber_g": 14,
+            "iron_mg": 7,
+            "calcium_mg": 700,
+            "vitamin_a_iu": 1000,
+            "vitamin_c_mg": 15,
+            "vitamin_d_iu": 600,
+            "zinc_mg": 3,
+        }
+    return {
+        "calories": 1200,
+        "protein_g": 19,
+        "fiber_g": 17,
+        "iron_mg": 10,
+        "calcium_mg": 1000,
+        "vitamin_c_mg": 25,
+        "zinc_mg": 5,
+    }
+
+
+def _totals_for_day(db: Session, user_id: str, child_id: str, day: date) -> Dict[str, float]:
+    row = db.query(
+        func.sum(Meal.calories).label("calories"),
+        func.sum(Meal.protein_g).label("protein_g"),
+        func.sum(Meal.fiber_g).label("fiber_g"),
+        func.sum(Meal.iron_mg).label("iron_mg"),
+        func.sum(Meal.calcium_mg).label("calcium_mg"),
+        func.sum(Meal.vitamin_a_iu).label("vitamin_a_iu"),
+        func.sum(Meal.vitamin_c_mg).label("vitamin_c_mg"),
+        func.sum(Meal.vitamin_d_iu).label("vitamin_d_iu"),
+        func.sum(Meal.zinc_mg).label("zinc_mg"),
+    ).filter(
+        Meal.child_id == child_id,
+        Meal.user_id == user_id,
+        func.coalesce(Meal.meal_date, func.date(Meal.meal_time)) == day,
+    ).one()
+    totals: Dict[str, float] = {}
+    for k in [
+        "calories",
+        "protein_g",
+        "fiber_g",
+        "iron_mg",
+        "calcium_mg",
+        "vitamin_a_iu",
+        "vitamin_c_mg",
+        "vitamin_d_iu",
+        "zinc_mg",
+    ]:
+        v = getattr(row, k)
+        if v is not None:
+            totals[k] = float(v)
+    return totals
+
+
+def compute_daily_score(db: Session, user_id: str, child_id: str, day: date) -> Dict:
+    child = db.query(Child).filter(Child.id == child_id, Child.user_id == user_id).first()
+    if not child:
+        raise ValueError("child not found or unauthorized")
+    age_months = _calc_age_months(child.date_of_birth)
+    targets = _targets_for_age_region(age_months, child.region or "US")
+    totals = _totals_for_day(db, user_id, child_id, day)
+
+    weights = {
+        "calories": 25,
+        "protein_g": 25,
+        "iron_mg": 15,
+        "calcium_mg": 15,
+        "vitamin_c_mg": 10,
+        "fiber_g": 10,
+    }
+    component_scores: Dict[str, int] = {}
+    total_score = 0
+    for key, weight in weights.items():
+        tgt = targets.get(key)
+        act = totals.get(key)
+        if tgt and act is not None and tgt > 0:
+            frac = min(act / tgt, 1.0)
+            pts = int(round(frac * weight))
+        else:
+            pts = 0
+        component_scores[key] = pts
+        total_score += pts
+
+    # upsert into gam_daily_score
+    try:
+        existing = db.query(GamDailyScore).filter(
+            GamDailyScore.user_id == user_id,
+            GamDailyScore.child_id == child_id,
+            GamDailyScore.date == day,
+        ).first()
+        if not existing:
+            existing = GamDailyScore(user_id=user_id, child_id=child_id, date=day)
+            db.add(existing)
+        existing.score = total_score
+        existing.components_json = component_scores
+        db.commit()
+    except SQLAlchemyError:
+        # Table may not exist yet; skip persistence but still return computed values
+        db.rollback()
+    return {"score": total_score, "components": component_scores}
+
+
+def update_streak(db: Session, user_id: str, child_id: str, day: date) -> Dict:
+    try:
+        streak = db.query(GamStreak).filter(GamStreak.user_id == user_id, GamStreak.child_id == child_id).first()
+        if not streak:
+            streak = GamStreak(user_id=user_id, child_id=child_id, current_length=0, best_length=0)
+            db.add(streak)
+
+        # Active day if any meal exists
+        has_any = (
+            db.query(Meal.id)
+            .filter(
+                Meal.user_id == user_id,
+                Meal.child_id == child_id,
+                func.coalesce(Meal.meal_date, func.date(Meal.meal_time)) == day,
+            )
+            .limit(1)
+            .first()
+            is not None
+        )
+
+        if has_any:
+            if streak.last_active_date == day - timedelta(days=1):
+                streak.current_length += 1
+            else:
+                streak.current_length = 1
+            streak.last_active_date = day
+            if streak.current_length > streak.best_length:
+                streak.best_length = streak.current_length
+        db.commit()
+        return {"current": streak.current_length, "best": streak.best_length}
+    except SQLAlchemyError:
+        db.rollback()
+        # Fallback ephemeral streak: 1 if any meal exists today, else 0
+        has_any = (
+            db.query(Meal.id)
+            .filter(
+                Meal.user_id == user_id,
+                Meal.child_id == child_id,
+                func.coalesce(Meal.meal_date, func.date(Meal.meal_time)) == day,
+            )
+            .limit(1)
+            .first()
+            is not None
+        )
+        return {"current": 1 if has_any else 0, "best": 1 if has_any else 0}
+
+
+def _insert_points_once(db: Session, user_id: str, child_id: str, day: date, points: int, reason: str) -> int:
+    try:
+        exists = db.query(GamPointsLedger).filter(
+            GamPointsLedger.user_id == user_id,
+            GamPointsLedger.child_id == child_id,
+            GamPointsLedger.date == day,
+            GamPointsLedger.reason == reason,
+        ).first()
+        if exists:
+            return 0
+        db.add(GamPointsLedger(user_id=user_id, child_id=child_id, date=day, points=points, reason=reason))
+        db.commit()
+        return points
+    except SQLAlchemyError:
+        db.rollback()
+        # Ledger table may not exist; pretend we awarded (ephemeral)
+        return points
+
+
+def award_points(db: Session, user_id: str, child_id: str, day: date, daily_score: int) -> int:
+    awarded = 0
+    awarded += _insert_points_once(db, user_id, child_id, day, 10, "base")
+    if daily_score >= 70:
+        awarded += _insert_points_once(db, user_id, child_id, day, 10, "score70")
+    if daily_score >= 90:
+        awarded += _insert_points_once(db, user_id, child_id, day, 20, "score90")
+    return awarded
+
+
+def _get_or_create_badge(db: Session, name: str, badge_type: BadgeType) -> Badge:
+    try:
+        b = db.query(Badge).filter(Badge.name == name).first()
+        if b:
+            return b
+        b = Badge(name=name, description=name.replace("_", " ").title(), badge_type=badge_type, criteria={})
+        db.add(b)
+        db.commit()
+        return b
+    except SQLAlchemyError:
+        db.rollback()
+        # If badges table missing, return a stub not persisted
+        class _Stub:
+            id = None
+        return _Stub()
+
+
+def maybe_award_badges(db: Session, user_id: str, child_id: str, day: date, daily_score: int, streak: Dict):
+    try:
+        # starter_chef: first meal ever for this child
+        first_meal = (
+            db.query(Meal.id)
+            .filter(Meal.user_id == user_id, Meal.child_id == child_id)
+            .order_by(Meal.created_at.asc())
+            .limit(1)
+            .first()
+        )
+        if first_meal and streak.get("current", 0) == 1:
+            b = _get_or_create_badge(db, "starter_chef", BadgeType.MILESTONE)
+            if getattr(b, "id", None) is not None and not db.query(UserBadge).filter(UserBadge.user_id == user_id, UserBadge.badge_id == b.id).first():
+                db.add(UserBadge(user_id=user_id, badge_id=b.id))
+
+        if streak.get("best", 0) >= 7:
+            b = _get_or_create_badge(db, "seven_day_strong", BadgeType.STREAK)
+            if getattr(b, "id", None) is not None and not db.query(UserBadge).filter(UserBadge.user_id == user_id, UserBadge.badge_id == b.id).first():
+                db.add(UserBadge(user_id=user_id, badge_id=b.id))
+
+        if daily_score >= 90:
+            b = _get_or_create_badge(db, "perfect_day", BadgeType.ACHIEVEMENT)
+            if getattr(b, "id", None) is not None and not db.query(UserBadge).filter(UserBadge.user_id == user_id, UserBadge.badge_id == b.id).first():
+                db.add(UserBadge(user_id=user_id, badge_id=b.id))
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+
+
+def recompute_for_day(db: Session, user_id: str, child_id: str, day: date) -> Dict:
+    daily = compute_daily_score(db, user_id, child_id, day)
+    streak = update_streak(db, user_id, child_id, day)
+    points_today = award_points(db, user_id, child_id, day, daily["score"])
+    maybe_award_badges(db, user_id, child_id, day, daily["score"], streak)
+    return {"score": daily["score"], "components": daily["components"], "streak": streak, "points_awarded_today": points_today}
+
+
