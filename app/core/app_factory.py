@@ -1,5 +1,6 @@
 import os
 import logging
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
@@ -9,7 +10,8 @@ try:
 except Exception:
     SYNC_ENGINE = None
 
-logging.basicConfig(level=logging.INFO)
+log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=getattr(logging, log_level, logging.INFO))
 logger = logging.getLogger("tinytummy")
 
 
@@ -19,11 +21,25 @@ async def lifespan(app: FastAPI):
     try:
         if SYNC_ENGINE is not None:
             with SYNC_ENGINE.connect() as conn:
+                # Mask URL
+                try:
+                    raw_url = str(SYNC_ENGINE.url)
+                except Exception:
+                    raw_url = "unknown"
+                # Schema info
+                try:
+                    cs = conn.execute(text("SELECT current_schema() AS s")).first()
+                    sp = conn.execute(text("SHOW search_path")).first()
+                    schema = cs[0] if cs else None
+                    search_path = sp[0] if sp else None
+                except Exception:
+                    schema = None
+                    search_path = None
                 conn.execute(text("SELECT 1"))
-            logger.info("✅ Database connected (sync engine)")
+            logger.info("[db] url=%s schema=%s search_path=%s", raw_url, schema, search_path)
         else:
             logger.warning("DB engine not available; skipping ping")
-    except Exception as e:
+    except Exception:
         logger.exception("❌ Database ping failed")
     yield
     # Shutdown: no-op

@@ -10,6 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 import importlib
 from sqlalchemy import func as sfunc, case, text
 
+import os
 router = APIRouter(prefix="/gamification", tags=["Gamification"])
 
 
@@ -18,14 +19,15 @@ def gam_ping():
     return {"ok": True, "module": "gamification"}
 
 
-# Temporary diagnostic endpoint (placed before parameterized routes to avoid conflicts)
-@router.get("/diag/{child_id}", tags=["Gamification"])
-def gam_diag(
-    child_id: UUID,
-    date: _date = Query(...),
-    current_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+if os.getenv("ENABLE_GAM_DIAG", "false").lower() == "true":
+    # Temporary diagnostic endpoint (only mounted when ENABLE_GAM_DIAG=true)
+    @router.get("/diag/{child_id}", tags=["Gamification"])
+    def gam_diag(
+        child_id: UUID,
+        date: _date = Query(...),
+        current_user_id: str = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
     import logging
     logger = logging.getLogger("tinytummy")
     from app.models.child import Child
@@ -88,16 +90,17 @@ def gam_diag(
     ).mappings().first()
     out["streak_row"] = dict(st) if st else None
 
-    return out
+        return out
 
 
-@router.get("/dbsanity/{child_id}", tags=["Gamification"])
-def gam_dbsanity(
-    child_id: UUID,
-    date: _date = Query(...),
-    current_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+if os.getenv("ENABLE_GAM_DIAG", "false").lower() == "true":
+    @router.get("/dbsanity/{child_id}", tags=["Gamification"])
+    def gam_dbsanity(
+        child_id: UUID,
+        date: _date = Query(...),
+        current_user_id: str = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
     # Ownership check (same approach as summary)
     from app.models.child import Child
     child = db.query(Child).filter(Child.id == str(child_id), Child.user_id == current_user_id).first()
@@ -161,7 +164,7 @@ def gam_dbsanity(
             "gam_streak": {"exists": exists_streak, "count": counts.get("gam_streak"), "sample": small_rows("gam_streak")},
         },
     }
-    return out
+        return out
 
 
 @router.get("/{user_id}")

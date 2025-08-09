@@ -69,10 +69,118 @@ def get_meal_trends(
     current_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get nutrition trends for a child"""
-    meal_service = MealService(db)
-    trends = meal_service.get_meal_trends(child_id, current_user_id, days)
-    return trends
+    """Get nutrition trends for a child (last N days)."""
+    from datetime import timedelta
+    days = max(1, min(30, int(days)))
+    end_date = datetime.now(tz=timezone.utc).date()
+    start_date = end_date - timedelta(days=days - 1)
+
+    # Ownership check via child
+    from app.models.child import Child
+    child = db.query(Child).filter(Child.id == child_id, Child.user_id == current_user_id).first()
+    if not child:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Child not found")
+
+    # Aggregate nutrients per day
+    from app.models.meal import Meal
+    from sqlalchemy import func as sfunc
+    rows = db.query(
+        Meal.meal_date.label("d"),
+        sfunc.sum(Meal.calories).label("calories"),
+        sfunc.sum(Meal.protein_g).label("protein_g"),
+        sfunc.sum(Meal.fiber_g).label("fiber_g"),
+        sfunc.sum(Meal.iron_mg).label("iron_mg"),
+        sfunc.sum(Meal.calcium_mg).label("calcium_mg"),
+        sfunc.sum(Meal.vitamin_c_mg).label("vitamin_c_mg"),
+        sfunc.sum(Meal.vitamin_d_iu).label("vitamin_d_iu"),
+        sfunc.sum(Meal.zinc_mg).label("zinc_mg"),
+        sfunc.count(Meal.id).label("cnt")
+    ).filter(
+        Meal.child_id == child_id,
+        Meal.user_id == current_user_id,
+        Meal.meal_date >= start_date,
+        Meal.meal_date <= end_date,
+    ).group_by(Meal.meal_date).all()
+    by_day = {r.d: r for r in rows if r.d}
+
+    # Prefer saved scores
+    from app.models.gamification import GamDailyScore
+    scores = db.query(GamDailyScore.date, GamDailyScore.score).filter(
+        GamDailyScore.user_id == current_user_id,
+        GamDailyScore.child_id == child_id,
+        GamDailyScore.date >= start_date,
+        GamDailyScore.date <= end_date,
+    ).all()
+    score_map = {d: s for d, s in scores}
+
+    out = []
+    cur = start_date
+    while cur <= end_date:
+        r = by_day.get(cur)
+        totals = {}
+        if r:
+            for k in ["calories","protein_g","fiber_g","iron_mg","calcium_mg","vitamin_c_mg","vitamin_d_iu","zinc_mg"]:
+                v = getattr(r, k)
+                if v is not None:
+                    totals[k] = float(v)
+        score = int(score_map.get(cur, 0) or 0)
+        out.append({"date": cur.isoformat(), "totals": totals, "score": score})
+        cur += timedelta(days=1)
+    return {"child_id": child_id, "start_date": start_date.isoformat(), "end_date": end_date.isoformat(), "days": out}
+
+@router.patch("/{meal_id}", response_model=MealResponse)
+def edit_meal(
+    meal_id: str,
+    payload: dict,
+    current_user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    from app.models.meal import Meal
+    meal = db.query(Meal).filter(Meal.id == meal_id, Meal.user_id == current_user_id).first()
+    if not meal:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Meal not found")
+    old_day = getattr(meal, "meal_date", None) or meal.meal_time.date()
+    # Apply partial updates
+    import dateutil.parser
+    if "meal_time" in payload:
+        try:
+            meal.meal_time = dateutil.parser.isoparse(payload["meal_time"])
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid meal_time")
+    if "meal_type" in payload:
+        meal.meal_type = str(payload["meal_type"]).lower()
+    if "raw_input" in payload:
+        meal.raw_input = payload["raw_input"]
+    if "description" in payload:
+        meal.notes = payload["description"]
+    db.commit(); db.refresh(meal)
+    new_day = getattr(meal, "meal_date", None) or meal.meal_time.date()
+    try:
+        recompute_for_day(db, current_user_id, str(meal.child_id), old_day)
+        if new_day != old_day:
+            recompute_for_day(db, current_user_id, str(meal.child_id), new_day)
+    except Exception:
+        logger.warning("[meals] recompute after edit failed", exc_info=True)
+    return meal
+
+@router.delete("/{meal_id}")
+def delete_meal(
+    meal_id: str,
+    current_user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    from app.models.meal import Meal
+    meal = db.query(Meal).filter(Meal.id == meal_id, Meal.user_id == current_user_id).first()
+    if not meal:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Meal not found")
+    day = getattr(meal, "meal_date", None) or meal.meal_time.date()
+    child_id = str(meal.child_id)
+    db.delete(meal); db.commit()
+    try:
+        recompute_for_day(db, current_user_id, child_id, day)
+    except Exception:
+        logger.warning("[meals] recompute after delete failed", exc_info=True)
+    return {"deleted": True}
 
 
 @router.post("/batch-sync")
