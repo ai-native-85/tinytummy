@@ -19,11 +19,13 @@ def ok(name: str, r: requests.Response, codes):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python3 scripts/test_nutrition_remote.py <BASE_URL> [--with-gam]")
+        print("Usage: python3 scripts/test_nutrition_remote.py <BASE_URL> [--with-gam] [--with-trends] [--edit-meal]")
         sys.exit(2)
 
     base = sys.argv[1].rstrip('/')
     with_gam = any(arg == "--with-gam" for arg in sys.argv[2:])
+    with_trends = any(arg == "--with-trends" for arg in sys.argv[2:])
+    edit_meal = any(arg == "--edit-meal" for arg in sys.argv[2:])
 
     # Register or login
     email = f"nutri-{uuid.uuid4().hex[:8]}@example.com"
@@ -80,6 +82,8 @@ def main():
     }
     m = requests.post(f"{base}/meals/log", headers=headers, json=meal_payload, timeout=30)
     ok("Log Meal", m, [201])
+    meal_json = m.json() if m.status_code == 201 else {}
+    meal_id = meal_json.get("id")
 
     # Daily totals after meal
     dt2 = time.perf_counter()
@@ -134,6 +138,53 @@ def main():
         except AssertionError:
             print("Gamification assertions failed; payload:")
             print(gam1)
+    
+    if with_trends:
+        tr = requests.get(f"{base}/meals/trends/{child_id}", headers=headers, params={"days": 7}, timeout=30)
+        ok("Trends", tr, [200])
+        trends = tr.json() if tr.status_code == 200 else {}
+        try:
+            days_list = trends.get("days", [])
+            assert len(days_list) == 7
+            assert days_list[-1]["date"] == today
+            if with_gam and summary.get("gamification_summary_first"):
+                assert days_list[-1]["score"] == summary["gamification_summary_first"].get("daily_score",{}).get("score",0)
+        except AssertionError:
+            print("Trends assertions failed; payload:")
+            print(trends)
+        summary["trends"] = trends
+
+    if edit_meal and meal_id:
+        # Move meal to yesterday
+        from datetime import timedelta, datetime as dt
+        yday = (dt.now(tz=timezone.utc).date() - timedelta(days=1)).isoformat()
+        patch_payload = {"meal_time": f"{yday}T09:00:00Z"}
+        p = requests.patch(f"{base}/meals/{meal_id}", headers=headers, json=patch_payload, timeout=30)
+        ok("Patch Meal", p, [200])
+        # Check summaries for today and yesterday
+        g_today_after = requests.get(f"{base}/gamification/summary/{child_id}", headers=headers, params={"date": today}, timeout=30)
+        g_yday_after = requests.get(f"{base}/gamification/summary/{child_id}", headers=headers, params={"date": yday}, timeout=30)
+        ok("Summary Today (after patch)", g_today_after, [200])
+        ok("Summary Yesterday (after patch)", g_yday_after, [200])
+        gam_today_after = g_today_after.json() if g_today_after.status_code == 200 else {}
+        gam_yday_after = g_yday_after.json() if g_yday_after.status_code == 200 else {}
+        patch_effect = {
+            "today_delta": (summary.get("gamification_summary_first",{}).get("daily_score",{}).get("score",0) - gam_today_after.get("daily_score",{}).get("score",0)),
+            "yesterday_present": gam_yday_after.get("daily_score",{}).get("score",0) >= 0
+        }
+        summary["patch_effect"] = patch_effect
+
+        # Delete meal
+        d = requests.delete(f"{base}/meals/{meal_id}", headers=headers, timeout=30)
+        ok("Delete Meal", d, [200, 204])
+        # Verify today's totals zeroed (nutrition)
+        d3 = requests.get(f"{base}/nutrition/daily_totals/{child_id}", headers=headers, params={"date": today}, timeout=30)
+        ok("Daily Totals (post-delete)", d3, [200])
+        after_delete_nutrition = d3.json() if d3.status_code == 200 else {"totals": {}}
+        delete_effect = {
+            "today_totals_zeroed": (after_delete_nutrition.get("totals") == {})
+        }
+        summary["delete_effect"] = delete_effect
     print("\nSummary:")
     import json
     print(json.dumps(summary, indent=2))
