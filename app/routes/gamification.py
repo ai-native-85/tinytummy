@@ -4,6 +4,8 @@ from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
 from app.auth.jwt import get_current_user
+from sqlalchemy.exc import SQLAlchemyError
+import importlib
 
 router = APIRouter(prefix="/gamification", tags=["Gamification"])
 
@@ -72,27 +74,65 @@ def gamification_summary(
 
     out = recompute_for_day(db, current_user_id, child_id, day)
 
-    # Points today/total
-    from app.models.gamification import GamPointsLedger, GamStreak, UserBadge, Badge
+    # Points today/total and streak/badges; tolerate missing models/tables
+    try:
+        gm = importlib.import_module("app.models.gamification")
+    except Exception:
+        gm = None
     from sqlalchemy import func as sfunc
-    points_today = db.query(sfunc.coalesce(sfunc.sum(GamPointsLedger.points), 0)).filter(
-        GamPointsLedger.user_id == current_user_id,
-        GamPointsLedger.child_id == child_id,
-        GamPointsLedger.date == day,
-    ).scalar() or 0
 
-    points_total = db.query(sfunc.coalesce(sfunc.sum(GamPointsLedger.points), 0)).filter(
-        GamPointsLedger.user_id == current_user_id,
-        GamPointsLedger.child_id == child_id,
-    ).scalar() or 0
+    GamPointsLedger = getattr(gm, "GamPointsLedger", None) if gm else None
+    GamStreak = getattr(gm, "GamStreak", None) if gm else None
+    UserBadge = getattr(gm, "UserBadge", None) if gm else None
+    Badge = getattr(gm, "Badge", None) if gm else None
 
-    streak = db.query(GamStreak).filter(GamStreak.user_id == current_user_id, GamStreak.child_id == child_id).first()
-    current_len = streak.current_length if streak else 0
-    best_len = streak.best_length if streak else 0
+    # points_today
+    if GamPointsLedger is not None:
+        try:
+            points_today = db.query(sfunc.coalesce(sfunc.sum(GamPointsLedger.points), 0)).filter(
+                GamPointsLedger.user_id == current_user_id,
+                GamPointsLedger.child_id == child_id,
+                GamPointsLedger.date == day,
+            ).scalar() or 0
+        except SQLAlchemyError:
+            points_today = 0
+    else:
+        points_today = 0
 
-    # Earned badges (names)
-    earned = db.query(UserBadge, Badge).join(Badge, UserBadge.badge_id == Badge.id).filter(UserBadge.user_id == current_user_id).all()
-    badges = [{"key": b.name, "earned_on": ub.earned_at.isoformat()} for ub, b in earned]
+    # points_total
+    if GamPointsLedger is not None:
+        try:
+            points_total = db.query(sfunc.coalesce(sfunc.sum(GamPointsLedger.points), 0)).filter(
+                GamPointsLedger.user_id == current_user_id,
+                GamPointsLedger.child_id == child_id,
+            ).scalar() or 0
+        except SQLAlchemyError:
+            points_total = 0
+    else:
+        points_total = 0
+
+    # streak
+    if GamStreak is not None:
+        try:
+            streak = db.query(GamStreak).filter(GamStreak.user_id == current_user_id, GamStreak.child_id == child_id).first()
+            current_len = streak.current_length if streak else 0
+            best_len = streak.best_length if streak else 0
+        except SQLAlchemyError:
+            current_len = 0
+            best_len = 0
+    else:
+        current_len = 0
+        best_len = 0
+
+    # badges
+    if UserBadge is not None and Badge is not None:
+        try:
+            earned = db.query(UserBadge, Badge).join(Badge, UserBadge.badge_id == Badge.id).filter(UserBadge.user_id == current_user_id).all()
+            badges = [{"key": b.name, "earned_on": ub.earned_at.isoformat()} for ub, b in earned]
+        except SQLAlchemyError:
+            badges = []
+    else:
+        badges = []
 
     return {
       "date": str(day),
