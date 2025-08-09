@@ -7,7 +7,11 @@ from app.database import get_db
 from app.auth.jwt import get_current_user
 from app.schemas.nutrition import NutritionTargetsResponse, DailyTotalsResponse
 from app.models.child import Child
-from app.models.targets import ChildTargets
+from sqlalchemy.exc import SQLAlchemyError
+try:
+    from app.models.targets import ChildTargets
+except Exception:
+    ChildTargets = None  # hotfix: table may be missing
 from app.models.meal import Meal
 from sqlalchemy import func
 
@@ -33,9 +37,22 @@ def get_nutrition_targets(child_id: str, current_user_id: str = Depends(get_curr
     region = child.region or "US"
 
     # Prefer per-child overrides if present
-    ct = db.query(ChildTargets).filter(ChildTargets.child_id == child_id, ChildTargets.user_id == current_user_id).first()
-    if ct and ct.overrides:
-        return NutritionTargetsResponse(age_months=age_months, region=region, targets={k: float(v) for k, v in ct.overrides.items()})
+    overrides_applied = False
+    source = {"primary": None, "fallbacks": []}
+    if ChildTargets is not None:
+        try:
+            ct = db.query(ChildTargets).filter(ChildTargets.child_id == child_id, ChildTargets.user_id == current_user_id).first()
+            if ct and ct.overrides:
+                return NutritionTargetsResponse(
+                    age_months=age_months,
+                    region=region,
+                    source=source,
+                    targets={k: float(v) for k, v in ct.overrides.items()},
+                    overrides_applied=True,
+                )
+        except SQLAlchemyError:
+            # hotfix: missing table or other SQL issues → ignore overrides
+            pass
 
     # Simple placeholder mapping. In a fuller version, query nutrition_guidelines table
     # for the closest matching age band by region and emit only defined keys.
@@ -70,7 +87,7 @@ def get_nutrition_targets(child_id: str, current_user_id: str = Depends(get_curr
             "zinc_mg": 5,
         }
 
-    return NutritionTargetsResponse(age_months=age_months, region=region, targets=targets)
+    return NutritionTargetsResponse(age_months=age_months, region=region, source=source, targets=targets, overrides_applied=overrides_applied)
 
 
 @router.get("/daily_totals/{child_id}", response_model=DailyTotalsResponse)

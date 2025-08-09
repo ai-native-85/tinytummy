@@ -6,6 +6,7 @@ from typing import List
 from app.database import get_db
 from app.schemas.child import ChildCreate, ChildUpdate, ChildResponse
 from app.models.child import Child
+from sqlalchemy.exc import SQLAlchemyError
 from app.auth.jwt import get_current_user
 from app.models.user import User
 from app.models.targets import ChildTargets
@@ -137,15 +138,18 @@ def put_child_targets(
     child = db.query(Child).filter(Child.id == child_id, Child.user_id == current_user_id).first()
     if not child:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=CHILD_NOT_FOUND_ERROR)
-    ct = db.query(ChildTargets).filter(ChildTargets.child_id == child_id, ChildTargets.user_id == current_user_id).first()
-    if not ct:
-        ct = ChildTargets(child_id=child_id, user_id=current_user_id, overrides={})
-        db.add(ct)
-    # Basic validation: only allow numeric values
-    overrides = {k: float(v) for k, v in (payload or {}).items() if isinstance(v, (int, float))}
-    ct.overrides = overrides
-    db.commit(); db.refresh(ct)
-    return {"child_id": child_id, "overrides": ct.overrides}
+    try:
+        ct = db.query(ChildTargets).filter(ChildTargets.child_id == child_id, ChildTargets.user_id == current_user_id).first()
+        if not ct:
+            ct = ChildTargets(child_id=child_id, user_id=current_user_id, overrides={})
+            db.add(ct)
+        overrides_obj = payload if isinstance(payload, dict) else {}
+        overrides = {k: float(v) for k, v in (overrides_obj.get("overrides", {}) if isinstance(overrides_obj, dict) else {}).items() if isinstance(v, (int, float))}
+        ct.overrides = overrides
+        db.commit(); db.refresh(ct)
+        return {"child_id": child_id, "overrides": ct.overrides}
+    except SQLAlchemyError:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="child targets unsupported (table missing)")
 
 
 @router.get("/{child_id}/targets")
@@ -157,8 +161,11 @@ def get_child_targets(
     child = db.query(Child).filter(Child.id == child_id, Child.user_id == current_user_id).first()
     if not child:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=CHILD_NOT_FOUND_ERROR)
-    ct = db.query(ChildTargets).filter(ChildTargets.child_id == child_id, ChildTargets.user_id == current_user_id).first()
-    return {"child_id": child_id, "overrides": (ct.overrides if ct else {})}
+    try:
+        ct = db.query(ChildTargets).filter(ChildTargets.child_id == child_id, ChildTargets.user_id == current_user_id).first()
+        return {"child_id": child_id, "overrides": (ct.overrides if ct else {})}
+    except SQLAlchemyError:
+        return {"child_id": child_id, "overrides": {}}
 
 @router.delete("/{child_id}")
 def delete_child(
