@@ -19,29 +19,20 @@ def gam_ping():
 
 
 # Temporary diagnostic endpoint (placed before parameterized routes to avoid conflicts)
-@router.get("/__diag", tags=["Gamification"])
+@router.get("/diag/{child_id}", tags=["Gamification"])
 def gam_diag(
-    child_id: str,
-    day: date_cls = Query(...),
+    child_id: UUID,
+    date: _date = Query(...),
     current_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    import logging, uuid
+    import logging
     logger = logging.getLogger("tinytummy")
-    # Normalize UUIDs as strings
-    try:
-        child_uuid = str(uuid.UUID(str(child_id)))
-    except Exception:
-        child_uuid = str(child_id)
-    try:
-        user_uuid = str(uuid.UUID(str(current_user_id)))
-    except Exception:
-        user_uuid = str(current_user_id)
     from app.models.child import Child
-    child = db.query(Child).filter(Child.id == child_uuid, Child.user_id == user_uuid).first()
+    child = db.query(Child).filter(Child.id == str(child_id), Child.user_id == current_user_id).first()
     if not child:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Child not found")
-    logger.info("[diag] user=%s child=%s allowed", user_uuid, child_uuid)
+    logger.info("[diag] allowed user=%s child=%s", current_user_id, str(child_id))
 
     out = {}
     # daily score row
@@ -53,7 +44,7 @@ def gam_diag(
             WHERE user_id=:u AND child_id=:c AND date=:d
             """
         ),
-        {"u": user_uuid, "c": child_uuid, "d": day},
+        {"u": str(current_user_id), "c": str(child_id), "d": date},
     ).mappings().first()
     out["daily_score_row"] = dict(ds) if ds else None
 
@@ -68,7 +59,7 @@ def gam_diag(
             WHERE user_id = :u AND child_id = :c
             """
         ),
-        {"u": user_uuid, "c": child_uuid, "d": day},
+        {"u": str(current_user_id), "c": str(child_id), "d": date},
     ).mappings().first()
     out["points_sums"] = dict(sums) if sums else None
 
@@ -81,7 +72,7 @@ def gam_diag(
             ORDER BY date ASC, reason ASC
             """
         ),
-        {"u": user_uuid, "c": child_uuid},
+        {"u": str(current_user_id), "c": str(child_id)},
     ).mappings().all()
     out["points_rows"] = [dict(r) for r in rows]
 
@@ -93,17 +84,17 @@ def gam_diag(
             WHERE user_id=:u AND child_id=:c
             """
         ),
-        {"u": user_uuid, "c": child_uuid},
+        {"u": str(current_user_id), "c": str(child_id)},
     ).mappings().first()
     out["streak_row"] = dict(st) if st else None
 
     return out
 
 
-@router.get("/__dbsanity", tags=["Gamification"])
+@router.get("/dbsanity/{child_id}", tags=["Gamification"])
 def gam_dbsanity(
     child_id: UUID,
-    day: _date = Query(...),
+    date: _date = Query(...),
     current_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -315,71 +306,5 @@ def gamification_summary(
 
 
 @router.get("/__diag", tags=["Gamification"])
-def gam_diag(
-    child_id: str,
-    day: date_cls = Query(...),
-    current_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    import logging, uuid
-    logger = logging.getLogger("tinytummy")
-    # Normalize to UUID if model uses UUID
-    try:
-        child_uuid = str(uuid.UUID(str(child_id)))
-    except Exception:
-        child_uuid = str(child_id)
-    try:
-        user_uuid = str(uuid.UUID(str(current_user_id)))
-    except Exception:
-        user_uuid = str(current_user_id)
-    from app.models.child import Child
-    child = db.query(Child).filter(Child.id == child_uuid, Child.user_id == user_uuid).first()
-    if not child:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Child not found")
-    logger.info("[diag] user=%s child=%s allowed", user_uuid, child_uuid)
-
-    out = {}
-    ds = db.execute(
-        text("""
-        SELECT score, components_json
-        FROM gam_daily_score
-        WHERE user_id=:u AND child_id=:c AND date=:d
-        """),
-        {"u": user_uuid, "c": child_uuid, "d": day},
-    ).mappings().first()
-    out["daily_score_row"] = dict(ds) if ds else None
-
-    sums = db.execute(
-        text("""
-        SELECT
-          COALESCE(SUM(CASE WHEN date = :d THEN points ELSE 0 END), 0) AS points_today,
-          COALESCE(SUM(points), 0) AS points_total
-        FROM gam_points_ledger
-        WHERE user_id = :u AND child_id = :c
-        """),
-        {"u": user_uuid, "c": child_uuid, "d": day},
-    ).mappings().first()
-    out["points_sums"] = dict(sums) if sums else None
-
-    rows = db.execute(
-        text("""
-        SELECT date, reason, points
-        FROM gam_points_ledger
-        WHERE user_id=:u AND child_id=:c
-        ORDER BY date ASC, reason ASC
-        """),
-        {"u": user_uuid, "c": child_uuid},
-    ).mappings().all()
-    out["points_rows"] = [dict(r) for r in rows]
-
-    st = db.execute(
-        text("""
-        SELECT current_length, best_length, last_active_date
-        FROM gam_streak
-        WHERE user_id=:u AND child_id=:c
-        """),
-        {"u": user_uuid, "c": child_uuid},
-    ).mappings().first()
-    out["streak_row"] = dict(st) if st else None
-
-    return out
+def gam_diag_legacy_removed():
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Use /gamification/diag/{child_id}")
