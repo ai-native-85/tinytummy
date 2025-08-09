@@ -4,11 +4,14 @@ from datetime import datetime, date, timedelta
 from typing import Dict, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import func, case, text
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 import logging
+import uuid
 
 from app.models.child import Child
 from app.models.meal import Meal
+from app.models.gamification import GamPointsLedger, GamDailyScore, GamStreak
 
 
 def _gm_module():
@@ -295,14 +298,24 @@ def maybe_award_badges(db: Session, user_id: str, child_id: str, day: date, dail
 
 def recompute_for_day(db: Session, user_id: str, child_id: str, day: date) -> Dict:
     logger = logging.getLogger("tinytummy")
-    logger.info("[meals] recompute gamification user=%s child=%s day=%s", user_id, child_id, day)
+    # Normalize IDs to UUID
+    try:
+        user_uuid = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
+    except Exception:
+        user_uuid = user_id
+    try:
+        child_uuid = child_id if isinstance(child_id, uuid.UUID) else uuid.UUID(str(child_id))
+    except Exception:
+        child_uuid = child_id
+
+    logger.info("[meals] recompute gamification user=%s child=%s day=%s", user_uuid, child_uuid, day)
 
     # Active-day detection (any meal exists for the date)
     has_any = (
         db.query(Meal.id)
         .filter(
-            Meal.user_id == user_id,
-            Meal.child_id == child_id,
+            Meal.user_id == user_uuid,
+            Meal.child_id == child_uuid,
             func.coalesce(Meal.meal_date, func.date(Meal.meal_time)) == day,
         )
         .limit(1)
@@ -311,58 +324,107 @@ def recompute_for_day(db: Session, user_id: str, child_id: str, day: date) -> Di
     )
     logger.info("[gam] active_today user=%s child=%s day=%s active=%s", user_id, child_id, day, has_any)
 
-    # Writes with diagnostics
+    # Calculate daily score (read-only compute)
     try:
-        daily = compute_daily_score(db, user_id, child_id, day)
+        daily = compute_daily_score(db, user_uuid, child_uuid, day)
     except Exception:
-        logger.exception("[gam] WRITE_FAIL daily_score user=%s child=%s day=%s", user_id, child_id, day)
+        logger.exception("[gam] WRITE_FAIL daily_score user=%s child=%s day=%s", user_uuid, child_uuid, day)
         daily = {"score": 0, "components": {}}
 
+    # Upsert daily score (Core UPSERT)
     try:
-        streak = update_streak(db, user_id, child_id, day)
-    except Exception:
-        logger.exception("[gam] WRITE_FAIL streak user=%s child=%s day=%s", user_id, child_id, day)
-        streak = {"current": 0, "best": 0}
-
-    try:
-        points_awarded, reasons = award_points(db, user_id, child_id, day, daily["score"])
-    except Exception:
-        logger.exception("[gam] WRITE_FAIL points user=%s child=%s day=%s", user_id, child_id, day)
-        points_awarded, reasons = 0, []
-
-    try:
-        maybe_award_badges(db, user_id, child_id, day, daily["score"], streak)
-    except Exception:
-        logger.exception("[gam] WRITE_FAIL badges user=%s child=%s day=%s", user_id, child_id, day)
-
-    # Read-back points to confirm persistence (raw SQL)
-    try:
-        sums = db.execute(
-            text(
-                """
-                SELECT
-                  COALESCE(SUM(CASE WHEN date = :d THEN points ELSE 0 END), 0) AS points_today,
-                  COALESCE(SUM(points), 0) AS points_total
-                FROM gam_points_ledger
-                WHERE user_id = :u AND child_id = :c
-                """
-            ),
-            {"u": str(user_id), "c": str(child_id), "d": day},
-        ).mappings().first()
-        today_sum = int((sums or {}).get("points_today", 0))
-        total_sum = int((sums or {}).get("points_total", 0))
-        logger.info(
-            "[gam] points_awarded user=%s child=%s day=%s reasons=%s readback_today=%s total=%s",
-            user_id,
-            child_id,
-            day,
-            reasons,
-            today_sum,
-            total_sum,
+        score_val = int(daily.get("score", 0))
+        stmt = insert(GamDailyScore.__table__).values(
+            user_id=user_uuid, child_id=child_uuid, date=day, score=score_val
+        ).on_conflict_do_update(
+            index_elements=["user_id", "child_id", "date"],
+            set_={"score": score_val}
         )
+        res = db.execute(stmt)
+        db.flush(); db.commit()
+        logger.info("[gam] upsert_daily_score rowcount=%s", getattr(res, "rowcount", None))
+        rb = db.query(GamDailyScore.score).filter(
+            GamDailyScore.user_id == user_uuid,
+            GamDailyScore.child_id == child_uuid,
+            GamDailyScore.date == day,
+        ).scalar()
+        logger.info("[gam] daily_score_readback score=%s", rb)
     except Exception:
-        logger.exception("[gam] READBACK_FAIL points user=%s child=%s day=%s", user_id, child_id, day)
+        db.rollback()
+        logger.exception("[gam] WRITE_FAIL daily_score user=%s child=%s day=%s", user_uuid, child_uuid, day)
+        rb = 0
 
-    return {"score": daily["score"], "components": daily["components"], "streak": streak, "points_awarded_today": points_awarded}
+    # Points inserts (idempotent UPSERT do-nothing)
+    points_awarded = 0
+    reasons = []
+    try:
+        for reason, pts, cond in [("base", 10, True), ("score70", 10, rb >= 70), ("score90", 20, rb >= 90)]:
+            if not cond:
+                continue
+            stmt = insert(GamPointsLedger.__table__).values(
+                user_id=user_uuid, child_id=child_uuid, date=day, reason=reason, points=pts
+            ).on_conflict_do_nothing(index_elements=["user_id", "child_id", "date", "reason"])
+            res = db.execute(stmt)
+            db.flush(); db.commit()
+            logger.info("[gam] points_insert rowcount=%s reason=%s points=%s", getattr(res, "rowcount", None), reason, pts)
+            if getattr(res, "rowcount", 0):
+                points_awarded += pts
+                reasons.append(reason)
+    except Exception:
+        db.rollback()
+        logger.exception("[gam] WRITE_FAIL points user=%s child=%s day=%s", user_uuid, child_uuid, day)
+
+    # Points readback (same session)
+    try:
+        today_sum = db.query(func.coalesce(func.sum(GamPointsLedger.points), 0)).filter(
+            GamPointsLedger.user_id == user_uuid,
+            GamPointsLedger.child_id == child_uuid,
+            GamPointsLedger.date == day,
+        ).scalar()
+        total_sum = db.query(func.coalesce(func.sum(GamPointsLedger.points), 0)).filter(
+            GamPointsLedger.user_id == user_uuid,
+            GamPointsLedger.child_id == child_uuid,
+        ).scalar()
+        logger.info("[gam] points_readback user=%s child=%s day=%s today=%s total=%s", user_uuid, child_uuid, day, today_sum, total_sum)
+    except Exception:
+        logger.exception("[gam] READBACK_FAIL points")
+
+    # Streak upsert
+    try:
+        # Determine new values
+        existing = db.query(GamStreak).filter(GamStreak.user_id == user_uuid, GamStreak.child_id == child_uuid).first()
+        last_active = existing.last_active_date if existing else None
+        if has_any:
+            if last_active == (day - timedelta(days=1)):
+                new_current = (existing.current_length if existing else 0) + 1
+            elif last_active == day:
+                new_current = existing.current_length if existing else 1
+            else:
+                new_current = 1
+            new_best = max(existing.best_length if existing else 0, new_current)
+        else:
+            new_current = existing.current_length if existing else 0
+            new_best = existing.best_length if existing else 0
+
+        stmt = insert(GamStreak.__table__).values(
+            user_id=user_uuid, child_id=child_uuid,
+            current_length=new_current, best_length=new_best, last_active_date=day if has_any else last_active
+        ).on_conflict_do_update(
+            index_elements=["user_id", "child_id"],
+            set_={"current_length": new_current, "best_length": new_best, "last_active_date": (day if has_any else last_active)}
+        )
+        res = db.execute(stmt)
+        db.flush(); db.commit()
+        logger.info("[gam] upsert_streak rowcount=%s", getattr(res, "rowcount", None))
+        rb_st = db.query(GamStreak.current_length, GamStreak.best_length, GamStreak.last_active_date).filter(
+            GamStreak.user_id == user_uuid, GamStreak.child_id == child_uuid
+        ).first()
+        if rb_st:
+            logger.info("[gam] streak_readback current=%s best=%s last_active=%s", rb_st[0], rb_st[1], rb_st[2])
+    except Exception:
+        db.rollback()
+        logger.exception("[gam] WRITE_FAIL streak user=%s child=%s day=%s", user_uuid, child_uuid, day)
+
+    return {"score": daily["score"], "components": daily["components"], "streak": {"current": new_current if has_any else 0, "best": new_best if has_any else 0}, "points_awarded_today": points_awarded}
 
 
