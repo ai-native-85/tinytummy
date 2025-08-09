@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, date, timedelta
 from typing import Dict, Tuple
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, case
 from sqlalchemy.exc import SQLAlchemyError
 import logging
 
@@ -294,10 +294,54 @@ def maybe_award_badges(db: Session, user_id: str, child_id: str, day: date, dail
 
 
 def recompute_for_day(db: Session, user_id: str, child_id: str, day: date) -> Dict:
+    logger = logging.getLogger("tinytummy")
+    logger.info("[meals] recompute gamification user=%s child=%s day=%s", user_id, child_id, day)
+
+    # Active-day detection (any meal exists for the date)
+    has_any = (
+        db.query(Meal.id)
+        .filter(
+            Meal.user_id == user_id,
+            Meal.child_id == child_id,
+            func.coalesce(Meal.meal_date, func.date(Meal.meal_time)) == day,
+        )
+        .limit(1)
+        .first()
+        is not None
+    )
+    logger.info("[gam] active_today user=%s child=%s day=%s active=%s", user_id, child_id, day, has_any)
+
     daily = compute_daily_score(db, user_id, child_id, day)
     streak = update_streak(db, user_id, child_id, day)
-    points_today = award_points(db, user_id, child_id, day, daily["score"])
+    points_awarded = award_points(db, user_id, child_id, day, daily["score"])
     maybe_award_badges(db, user_id, child_id, day, daily["score"], streak)
-    return {"score": daily["score"], "components": daily["components"], "streak": streak, "points_awarded_today": points_today}
+
+    # Read-back points to confirm persistence
+    try:
+        row = db.query(
+            func.coalesce(func.sum(case((Meal.user_id == user_id, 0), else_=0)), 0)  # dummy to keep query structure stable
+        ).first()  # no-op to ensure session usable
+        sums = db.query(
+            func.coalesce(func.sum(case((getattr(_gm_module(), "GamPointsLedger").date == day, getattr(_gm_module(), "GamPointsLedger").points), else_=0)), 0).label("today"),
+            func.coalesce(func.sum(getattr(_gm_module(), "GamPointsLedger").points), 0).label("total"),
+        ).filter(
+            getattr(_gm_module(), "GamPointsLedger").user_id == user_id,
+            getattr(_gm_module(), "GamPointsLedger").child_id == child_id,
+        ).one()
+        today_sum = int(sums.today or 0)
+        total_sum = int(sums.total or 0)
+        logger.info(
+            "[gam] points_awarded user=%s child=%s day=%s reasons=%s readback_today=%s total=%s",
+            user_id,
+            child_id,
+            day,
+            "logged",  # reasons already logged inside award_points; this is a readback log
+            today_sum,
+            total_sum,
+        )
+    except Exception:
+        pass
+
+    return {"score": daily["score"], "components": daily["components"], "streak": streak, "points_awarded_today": points_awarded}
 
 

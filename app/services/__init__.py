@@ -5,7 +5,7 @@ from .caregiver_service import CaregiverService
 from .chat_service import ChatService
 from .plan_service import PlanService
 from .report_service import ReportService
-from .gamification_service import GamificationService
+# Deprecated legacy service not exported to avoid drift
 from .sync_service import SyncService
 
 __all__ = [
