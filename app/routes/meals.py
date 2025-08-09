@@ -7,8 +7,12 @@ from app.services.meal_service import MealService
 from app.auth.jwt import get_current_user
 from app.utils.responses import sync_response
 from app.utils.constants import DEFAULT_MEAL_LIMIT, DEFAULT_TREND_DAYS
+from datetime import datetime, timezone
+from app.services.gamification_v1 import recompute_for_day
+import logging
 
 router = APIRouter(prefix="/meals", tags=["Meals"])
+logger = logging.getLogger("tinytummy")
 
 
 @router.post("/log", response_model=MealResponse, status_code=status.HTTP_201_CREATED)
@@ -20,6 +24,28 @@ def log_meal(
     """Log a new meal with GPT-4 analysis"""
     meal_service = MealService(db)
     meal = meal_service.create_meal(meal_data, current_user_id)
+    # Recompute gamification for the meal date
+    meal_time = getattr(meal, "meal_time", None)
+    if meal_time is None:
+        meal_time = datetime.now(tz=timezone.utc)
+    # Normalize to UTC date
+    try:
+        meal_time_utc = meal_time.astimezone(timezone.utc)
+    except Exception:
+        meal_time_utc = meal_time
+    meal_day = getattr(meal, "meal_date", None) or meal_time_utc.date()
+    try:
+        logger.debug(
+            "[meals] recompute gamification",
+            extra={
+                "child_id": str(meal.child_id),
+                "meal_time": meal_time_utc.isoformat() if hasattr(meal_time_utc, "isoformat") else str(meal_time_utc),
+                "meal_date_used": meal_day.isoformat(),
+            },
+        )
+        recompute_for_day(db, current_user_id, str(meal.child_id), meal_day)
+    except Exception:
+        pass
     return meal
 
 

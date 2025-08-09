@@ -6,6 +6,7 @@ from app.database import get_db
 from app.auth.jwt import get_current_user
 from sqlalchemy.exc import SQLAlchemyError
 import importlib
+from sqlalchemy import func as sfunc
 
 router = APIRouter(prefix="/gamification", tags=["Gamification"])
 
@@ -74,17 +75,39 @@ def gamification_summary(
 
     out = recompute_for_day(db, current_user_id, child_id, day)
 
-    # Points today/total and streak/badges; tolerate missing models/tables
+    # Points today/total and streak/badges; prefer persisted reads (fast path)
     try:
         gm = importlib.import_module("app.models.gamification")
     except Exception:
         gm = None
-    from sqlalchemy import func as sfunc
 
     GamPointsLedger = getattr(gm, "GamPointsLedger", None) if gm else None
     GamStreak = getattr(gm, "GamStreak", None) if gm else None
     UserBadge = getattr(gm, "UserBadge", None) if gm else None
     Badge = getattr(gm, "Badge", None) if gm else None
+    GamDailyScore = getattr(gm, "GamDailyScore", None) if gm else None
+
+    # Try to load daily_score from table; if absent, compute once and then read
+    score_payload = None
+    if GamDailyScore is not None:
+        try:
+            ds = db.query(GamDailyScore).filter(
+                GamDailyScore.user_id == current_user_id,
+                GamDailyScore.child_id == child_id,
+                GamDailyScore.date == day,
+            ).first()
+            if ds:
+                score_payload = {"score": ds.score or 0, "components": ds.components_json or {}}
+        except SQLAlchemyError:
+            score_payload = None
+    if score_payload is None:
+        # compute-and-persist once
+        try:
+            from app.services.gamification_v1 import recompute_for_day as _recompute
+            out = _recompute(db, current_user_id, child_id, day)
+            score_payload = {"score": out["score"], "components": out["components"]}
+        except Exception:
+            score_payload = {"score": 0, "components": {}}
 
     # points_today
     if GamPointsLedger is not None:
@@ -136,7 +159,7 @@ def gamification_summary(
 
     return {
       "date": str(day),
-      "daily_score": {"score": out["score"], "components": out["components"]},
+      "daily_score": score_payload,
       "streak": {"current": current_len, "best": best_len},
       "points_today": points_today,
       "points_total": points_total,

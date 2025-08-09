@@ -19,10 +19,11 @@ def ok(name: str, r: requests.Response, codes):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python3 scripts/test_nutrition_remote.py <BASE_URL>")
+        print("Usage: python3 scripts/test_nutrition_remote.py <BASE_URL> [--with-gam]")
         sys.exit(2)
 
     base = sys.argv[1].rstrip('/')
+    with_gam = any(arg == "--with-gam" for arg in sys.argv[2:])
 
     # Register or login
     email = f"nutri-{uuid.uuid4().hex[:8]}@example.com"
@@ -107,6 +108,32 @@ def main():
             "daily_totals_alias": int((dt_alias1 - dt_alias0) * 1000),
         }
     }
+    if with_gam:
+        # first call (after meal) expected to persist and return non-zero results
+        gs0 = time.perf_counter()
+        g1 = requests.get(f"{base}/gamification/summary/{child_id}", headers=headers, params={"date": today}, timeout=30)
+        gs1 = time.perf_counter()
+        ok("Gamification Summary", g1, [200])
+        gam1 = g1.json() if g1.status_code == 200 else {}
+
+        # second call (cached fast-path)
+        gs2 = time.perf_counter()
+        g2 = requests.get(f"{base}/gamification/summary/{child_id}", headers=headers, params={"date": today}, timeout=30)
+        gs3 = time.perf_counter()
+        ok("Gamification Summary (cached)", g2, [200])
+        gam2 = g2.json() if g2.status_code == 200 else {}
+
+        summary["gamification_summary_first"] = gam1
+        summary["gamification_summary_second"] = gam2
+        summary["timings_ms"]["gam_summary"] = int((gs1 - gs0) * 1000)
+        summary["timings_ms"]["gam_summary_cached"] = int((gs3 - gs2) * 1000)
+        try:
+            assert gam1.get("daily_score",{}).get("score",0) > 0
+            assert gam1.get("streak",{}).get("current",0) >= 1
+            assert gam1.get("points_today",0) >= 10
+        except AssertionError:
+            print("Gamification assertions failed; payload:")
+            print(gam1)
     print("\nSummary:")
     import json
     print(json.dumps(summary, indent=2))

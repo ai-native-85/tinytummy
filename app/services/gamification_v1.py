@@ -5,6 +5,7 @@ from typing import Dict, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
+import logging
 
 from app.models.child import Child
 from app.models.meal import Meal
@@ -133,6 +134,7 @@ def compute_daily_score(db: Session, user_id: str, child_id: str, day: date) -> 
             existing.score = total_score
             existing.components_json = component_scores
             db.commit()
+            logging.getLogger("tinytummy").debug("[gam] upsert daily_score", extra={"child_id": child_id, "date": day.isoformat(), "score": total_score})
     except SQLAlchemyError:
         # Table may not exist yet; skip persistence but still return computed values
         db.rollback()
@@ -171,6 +173,7 @@ def update_streak(db: Session, user_id: str, child_id: str, day: date) -> Dict:
             if streak.current_length > streak.best_length:
                 streak.best_length = streak.current_length
         db.commit()
+        logging.getLogger("tinytummy").debug("[gam] streak", extra={"child_id": child_id, "current": streak.current_length if streak else 0, "best": streak.best_length if streak else 0, "last_active_date": streak.last_active_date.isoformat() if streak and streak.last_active_date else None})
         return {"current": streak.current_length if streak else 0, "best": streak.best_length if streak else 0}
     except SQLAlchemyError:
         db.rollback()
@@ -204,6 +207,7 @@ def _insert_points_once(db: Session, user_id: str, child_id: str, day: date, poi
         if GPL:
             db.add(GPL(user_id=user_id, child_id=child_id, date=day, points=points, reason=reason))
         db.commit()
+        logging.getLogger("tinytummy").debug("[gam] points_awarded", extra={"child_id": child_id, "date": day.isoformat(), "points": points, "reason": reason})
         return points
     except SQLAlchemyError:
         db.rollback()
@@ -233,6 +237,7 @@ def _get_or_create_badge(db: Session, name: str, badge_type: BadgeType) -> Badge
         b = Badge(name=name, description=name.replace("_", " ").title(), badge_type=badge_type, criteria={})
         db.add(b)
         db.commit()
+        logging.getLogger("tinytummy").debug("[gam] maybe_award_badges done", extra={"child_id": child_id})
         return b
     except SQLAlchemyError:
         db.rollback()
