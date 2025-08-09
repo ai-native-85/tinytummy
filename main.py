@@ -1,4 +1,6 @@
 from fastapi import FastAPI, Depends
+from fastapi.routing import APIRoute
+import os
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from contextlib import asynccontextmanager
@@ -20,6 +22,8 @@ from app.routes import (
     meals_nutrition_alias_router,
 )
 from app.config import settings
+
+GIT_SHA = os.getenv("GIT_SHA", "unknown")
 
 
 @asynccontextmanager
@@ -103,6 +107,16 @@ async def health_check():
 @app.get("/healthz")
 async def health_probe():
     return {"status": "ok"}
+
+
+@app.get("/__version")
+async def version():
+    return {"git_sha": GIT_SHA}
+
+
+@app.get("/__routes")
+async def list_routes():
+    return {"routes": [r.path for r in app.router.routes if isinstance(r, APIRoute)]}
 
 
 if __name__ == "__main__":
