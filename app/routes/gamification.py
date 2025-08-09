@@ -11,7 +11,9 @@ import importlib
 from sqlalchemy import func as sfunc, case, text
 
 import os
+import logging
 router = APIRouter(prefix="/gamification", tags=["Gamification"])
+logger = logging.getLogger("tinytummy")
 
 
 @router.get("/ping")
@@ -19,7 +21,8 @@ def gam_ping():
     return {"ok": True, "module": "gamification"}
 
 
-if os.getenv("ENABLE_GAM_DIAG", "false").lower() == "true":
+_ENABLE_DIAG = os.getenv("ENABLE_GAM_DIAG", "false").lower() == "true"
+if _ENABLE_DIAG:
     # Temporary diagnostic endpoint (only mounted when ENABLE_GAM_DIAG=true)
     @router.get("/diag/{child_id}", tags=["Gamification"])
     def gam_diag(
@@ -28,72 +31,70 @@ if os.getenv("ENABLE_GAM_DIAG", "false").lower() == "true":
         current_user_id: str = Depends(get_current_user),
         db: Session = Depends(get_db),
     ):
-    import logging
-    logger = logging.getLogger("tinytummy")
-    from app.models.child import Child
-    child = db.query(Child).filter(Child.id == str(child_id), Child.user_id == current_user_id).first()
-    if not child:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Child not found")
-    logger.info("[diag] allowed user=%s child=%s", current_user_id, str(child_id))
+        from app.models.child import Child
+        child = db.query(Child).filter(Child.id == str(child_id), Child.user_id == current_user_id).first()
+        if not child:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Child not found")
+        logger.info("[diag] allowed user=%s child=%s", current_user_id, str(child_id))
 
-    out = {}
-    # daily score row
-    ds = db.execute(
-        text(
-            """
-            SELECT score, components_json
-            FROM gam_daily_score
-            WHERE user_id=:u AND child_id=:c AND date=:d
-            """
-        ),
-        {"u": str(current_user_id), "c": str(child_id), "d": date},
-    ).mappings().first()
-    out["daily_score_row"] = dict(ds) if ds else None
+        out = {}
+        # daily score row
+        ds = db.execute(
+            text(
+                """
+                SELECT score, components_json
+                FROM gam_daily_score
+                WHERE user_id=:u AND child_id=:c AND date=:d
+                """
+            ),
+            {"u": str(current_user_id), "c": str(child_id), "d": date},
+        ).mappings().first()
+        out["daily_score_row"] = dict(ds) if ds else None
 
-    # points sums and rows
-    sums = db.execute(
-        text(
-            """
-            SELECT
-              COALESCE(SUM(CASE WHEN date = :d THEN points ELSE 0 END), 0) AS points_today,
-              COALESCE(SUM(points), 0) AS points_total
-            FROM gam_points_ledger
-            WHERE user_id = :u AND child_id = :c
-            """
-        ),
-        {"u": str(current_user_id), "c": str(child_id), "d": date},
-    ).mappings().first()
-    out["points_sums"] = dict(sums) if sums else None
+        # points sums and rows
+        sums = db.execute(
+            text(
+                """
+                SELECT
+                  COALESCE(SUM(CASE WHEN date = :d THEN points ELSE 0 END), 0) AS points_today,
+                  COALESCE(SUM(points), 0) AS points_total
+                FROM gam_points_ledger
+                WHERE user_id = :u AND child_id = :c
+                """
+            ),
+            {"u": str(current_user_id), "c": str(child_id), "d": date},
+        ).mappings().first()
+        out["points_sums"] = dict(sums) if sums else None
 
-    rows = db.execute(
-        text(
-            """
-            SELECT date, reason, points
-            FROM gam_points_ledger
-            WHERE user_id=:u AND child_id=:c
-            ORDER BY date ASC, reason ASC
-            """
-        ),
-        {"u": str(current_user_id), "c": str(child_id)},
-    ).mappings().all()
-    out["points_rows"] = [dict(r) for r in rows]
+        rows = db.execute(
+            text(
+                """
+                SELECT date, reason, points
+                FROM gam_points_ledger
+                WHERE user_id=:u AND child_id=:c
+                ORDER BY date ASC, reason ASC
+                """
+            ),
+            {"u": str(current_user_id), "c": str(child_id)},
+        ).mappings().all()
+        out["points_rows"] = [dict(r) for r in rows]
 
-    st = db.execute(
-        text(
-            """
-            SELECT current_length, best_length, last_active_date
-            FROM gam_streak
-            WHERE user_id=:u AND child_id=:c
-            """
-        ),
-        {"u": str(current_user_id), "c": str(child_id)},
-    ).mappings().first()
-    out["streak_row"] = dict(st) if st else None
+        st = db.execute(
+            text(
+                """
+                SELECT current_length, best_length, last_active_date
+                FROM gam_streak
+                WHERE user_id=:u AND child_id=:c
+                """
+            ),
+            {"u": str(current_user_id), "c": str(child_id)},
+        ).mappings().first()
+        out["streak_row"] = dict(st) if st else None
 
         return out
 
 
-if os.getenv("ENABLE_GAM_DIAG", "false").lower() == "true":
+if _ENABLE_DIAG:
     @router.get("/dbsanity/{child_id}", tags=["Gamification"])
     def gam_dbsanity(
         child_id: UUID,
@@ -101,69 +102,68 @@ if os.getenv("ENABLE_GAM_DIAG", "false").lower() == "true":
         current_user_id: str = Depends(get_current_user),
         db: Session = Depends(get_db),
     ):
-    # Ownership check (same approach as summary)
-    from app.models.child import Child
-    child = db.query(Child).filter(Child.id == str(child_id), Child.user_id == current_user_id).first()
-    if not child:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Child not found")
+        # Ownership check (same approach as summary)
+        from app.models.child import Child
+        child = db.query(Child).filter(Child.id == str(child_id), Child.user_id == current_user_id).first()
+        if not child:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Child not found")
 
-    # Engine / URL
-    try:
-        eng = db.get_bind()
-        url = getattr(eng, "url", None)
-        raw_url = str(url) if url else "unknown"
-    except Exception:
-        raw_url = "unknown"
-    masked_url = raw_url
-
-    # Schema info
-    cs = db.execute(text("SELECT current_schema() AS s")).mappings().first()
-    current_schema = cs["s"] if cs else None
-    sp = db.execute(text("SHOW search_path")).mappings().first()
-    search_path = next(iter(sp.values())) if sp else None
-
-    def table_exists(name: str) -> bool:
-        q = text(
-            """
-            SELECT EXISTS (
-              SELECT 1 FROM information_schema.tables
-              WHERE table_schema = current_schema()
-                AND table_name = :t
-            ) AS exists
-            """
-        )
-        r = db.execute(q, {"t": name}).mappings().first()
-        return bool(r["exists"]) if r else False
-
-    exists_points = table_exists("gam_points_ledger")
-    exists_daily = table_exists("gam_daily_score")
-    exists_streak = table_exists("gam_streak")
-
-    def small_rows(name: str):
+        # Engine / URL
         try:
-            r = db.execute(text(f"SELECT * FROM {name} ORDER BY 1 LIMIT 3")).mappings().all()
-            return [dict(x) for x in r]
-        except Exception as e:
-            return [{"error": str(e)}]
+            eng = db.get_bind()
+            url = getattr(eng, "url", None)
+            raw_url = str(url) if url else "unknown"
+        except Exception:
+            raw_url = "unknown"
 
-    counts = {}
-    for name in ("gam_points_ledger", "gam_daily_score", "gam_streak"):
-        try:
-            c = db.execute(text(f"SELECT COUNT(*) AS c FROM {name}")).mappings().first()
-            counts[name] = int(c["c"]) if c and "c" in c else 0
-        except Exception as e:
-            counts[name] = f"ERR: {e}"
+        # Schema info
+        cs = db.execute(text("SELECT current_schema() AS s")).mappings().first()
+        current_schema = cs["s"] if cs else None
+        sp = db.execute(text("SHOW search_path")).mappings().first()
+        search_path = next(iter(sp.values())) if sp else None
 
-    out = {
-        "engine_url": masked_url,
-        "current_schema": current_schema,
-        "search_path": search_path,
-        "tables": {
-            "gam_points_ledger": {"exists": exists_points, "count": counts.get("gam_points_ledger"), "sample": small_rows("gam_points_ledger")},
-            "gam_daily_score": {"exists": exists_daily, "count": counts.get("gam_daily_score"), "sample": small_rows("gam_daily_score")},
-            "gam_streak": {"exists": exists_streak, "count": counts.get("gam_streak"), "sample": small_rows("gam_streak")},
-        },
-    }
+        def table_exists(name: str) -> bool:
+            q = text(
+                """
+                SELECT EXISTS (
+                  SELECT 1 FROM information_schema.tables
+                  WHERE table_schema = current_schema()
+                    AND table_name = :t
+                ) AS exists
+                """
+            )
+            r = db.execute(q, {"t": name}).mappings().first()
+            return bool(r["exists"]) if r else False
+
+        exists_points = table_exists("gam_points_ledger")
+        exists_daily = table_exists("gam_daily_score")
+        exists_streak = table_exists("gam_streak")
+
+        def small_rows(name: str):
+            try:
+                r = db.execute(text(f"SELECT * FROM {name} ORDER BY 1 LIMIT 3")).mappings().all()
+                return [dict(x) for x in r]
+            except Exception as e:
+                return [{"error": str(e)}]
+
+        counts = {}
+        for name in ("gam_points_ledger", "gam_daily_score", "gam_streak"):
+            try:
+                c = db.execute(text(f"SELECT COUNT(*) AS c FROM {name}")).mappings().first()
+                counts[name] = int(c["c"]) if c and "c" in c else 0
+            except Exception as e:
+                counts[name] = f"ERR: {e}"
+
+        out = {
+            "engine_url": raw_url,
+            "current_schema": current_schema,
+            "search_path": search_path,
+            "tables": {
+                "gam_points_ledger": {"exists": exists_points, "count": counts.get("gam_points_ledger"), "sample": small_rows("gam_points_ledger")},
+                "gam_daily_score": {"exists": exists_daily, "count": counts.get("gam_daily_score"), "sample": small_rows("gam_daily_score")},
+                "gam_streak": {"exists": exists_streak, "count": counts.get("gam_streak"), "sample": small_rows("gam_streak")},
+            },
+        }
         return out
 
 
