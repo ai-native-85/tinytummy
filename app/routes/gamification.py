@@ -16,6 +16,88 @@ def gam_ping():
     return {"ok": True, "module": "gamification"}
 
 
+# Temporary diagnostic endpoint (placed before parameterized routes to avoid conflicts)
+@router.get("/__diag", tags=["Gamification"])
+def gam_diag(
+    child_id: str,
+    day: date_cls = Query(...),
+    current_user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    import logging, uuid
+    logger = logging.getLogger("tinytummy")
+    # Normalize UUIDs as strings
+    try:
+        child_uuid = str(uuid.UUID(str(child_id)))
+    except Exception:
+        child_uuid = str(child_id)
+    try:
+        user_uuid = str(uuid.UUID(str(current_user_id)))
+    except Exception:
+        user_uuid = str(current_user_id)
+    from app.models.child import Child
+    child = db.query(Child).filter(Child.id == child_uuid, Child.user_id == user_uuid).first()
+    if not child:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Child not found")
+    logger.info("[diag] user=%s child=%s allowed", user_uuid, child_uuid)
+
+    out = {}
+    # daily score row
+    ds = db.execute(
+        text(
+            """
+            SELECT score, components_json
+            FROM gam_daily_score
+            WHERE user_id=:u AND child_id=:c AND date=:d
+            """
+        ),
+        {"u": user_uuid, "c": child_uuid, "d": day},
+    ).mappings().first()
+    out["daily_score_row"] = dict(ds) if ds else None
+
+    # points sums and rows
+    sums = db.execute(
+        text(
+            """
+            SELECT
+              COALESCE(SUM(CASE WHEN date = :d THEN points ELSE 0 END), 0) AS points_today,
+              COALESCE(SUM(points), 0) AS points_total
+            FROM gam_points_ledger
+            WHERE user_id = :u AND child_id = :c
+            """
+        ),
+        {"u": user_uuid, "c": child_uuid, "d": day},
+    ).mappings().first()
+    out["points_sums"] = dict(sums) if sums else None
+
+    rows = db.execute(
+        text(
+            """
+            SELECT date, reason, points
+            FROM gam_points_ledger
+            WHERE user_id=:u AND child_id=:c
+            ORDER BY date ASC, reason ASC
+            """
+        ),
+        {"u": user_uuid, "c": child_uuid},
+    ).mappings().all()
+    out["points_rows"] = [dict(r) for r in rows]
+
+    st = db.execute(
+        text(
+            """
+            SELECT current_length, best_length, last_active_date
+            FROM gam_streak
+            WHERE user_id=:u AND child_id=:c
+            """
+        ),
+        {"u": user_uuid, "c": child_uuid},
+    ).mappings().first()
+    out["streak_row"] = dict(st) if st else None
+
+    return out
+
+
 @router.get("/{user_id}")
 def get_gamification(
     user_id: str,
@@ -66,7 +148,6 @@ def gamification_summary(
     import time
     t0 = time.perf_counter()
     # Validate child ownership
-    from app.services.gamification_v1 import recompute_for_day
     from app.models.child import Child
     child = db.query(Child).filter(Child.id == child_id, Child.user_id == current_user_id).first()
     if not child:
@@ -75,8 +156,6 @@ def gamification_summary(
         day = datetime.fromisoformat(date).date()
     except Exception:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid date format")
-
-    out = recompute_for_day(db, current_user_id, child_id, day)
 
     # Points today/total and streak/badges; prefer persisted reads (fast path)
     try:
