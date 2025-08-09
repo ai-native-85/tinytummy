@@ -3,10 +3,7 @@ from datetime import datetime, date as date_cls
 from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
-from app.schemas.gamification import GamificationResponse, BadgeResponse
-from app.models.gamification import Gamification, Badge
 from app.auth.jwt import get_current_user
-from app.services.gamification_v1 import recompute_for_day
 
 router = APIRouter(prefix="/gamification", tags=["Gamification"])
 
@@ -16,13 +13,14 @@ def gam_ping():
     return {"ok": True, "module": "gamification"}
 
 
-@router.get("/{user_id}", response_model=GamificationResponse)
+@router.get("/{user_id}")
 def get_gamification(
     user_id: str,
     current_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get gamification data for a user"""
+    from app.models.gamification import Gamification
     if user_id != current_user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -43,12 +41,13 @@ def get_gamification(
     return gamification
 
 
-@router.get("/badges", response_model=List[BadgeResponse])
+@router.get("/badges")
 def get_badges(
     current_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get all available badges"""
+    from app.models.gamification import Badge
     badges = db.query(Badge).all()
     return badges 
 
@@ -61,6 +60,7 @@ def gamification_summary(
     db: Session = Depends(get_db)
 ):
     # Validate child ownership
+    from app.services.gamification_v1 import recompute_for_day
     from app.models.child import Child
     child = db.query(Child).filter(Child.id == child_id, Child.user_id == current_user_id).first()
     if not child:
