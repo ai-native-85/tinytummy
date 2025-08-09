@@ -8,14 +8,15 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.models.child import Child
 from app.models.meal import Meal
-from app.models.gamification import (
-    GamDailyScore,
-    GamPointsLedger,
-    GamStreak,
-    Badge,
-    UserBadge,
-    BadgeType,
-)
+
+
+def _gm_module():
+    """Lazily import gamification models; return module or None if unavailable."""
+    try:
+        from app.models import gamification as gm
+        return gm
+    except Exception:
+        return None
 
 
 def _calc_age_months(dob: date) -> int:
@@ -117,18 +118,21 @@ def compute_daily_score(db: Session, user_id: str, child_id: str, day: date) -> 
         total_score += pts
 
     # upsert into gam_daily_score
+    gm = _gm_module()
     try:
-        existing = db.query(GamDailyScore).filter(
-            GamDailyScore.user_id == user_id,
-            GamDailyScore.child_id == child_id,
-            GamDailyScore.date == day,
-        ).first()
-        if not existing:
-            existing = GamDailyScore(user_id=user_id, child_id=child_id, date=day)
-            db.add(existing)
-        existing.score = total_score
-        existing.components_json = component_scores
-        db.commit()
+        if gm and hasattr(gm, "GamDailyScore"):
+            GDS = gm.GamDailyScore
+            existing = db.query(GDS).filter(
+                GDS.user_id == user_id,
+                GDS.child_id == child_id,
+                GDS.date == day,
+            ).first()
+            if not existing:
+                existing = GDS(user_id=user_id, child_id=child_id, date=day)
+                db.add(existing)
+            existing.score = total_score
+            existing.components_json = component_scores
+            db.commit()
     except SQLAlchemyError:
         # Table may not exist yet; skip persistence but still return computed values
         db.rollback()
@@ -136,10 +140,13 @@ def compute_daily_score(db: Session, user_id: str, child_id: str, day: date) -> 
 
 
 def update_streak(db: Session, user_id: str, child_id: str, day: date) -> Dict:
+    gm = _gm_module()
     try:
-        streak = db.query(GamStreak).filter(GamStreak.user_id == user_id, GamStreak.child_id == child_id).first()
+        GS = gm.GamStreak if gm and hasattr(gm, "GamStreak") else None
+        streak = db.query(GS).filter(GS.user_id == user_id, GS.child_id == child_id).first() if GS else None
         if not streak:
-            streak = GamStreak(user_id=user_id, child_id=child_id, current_length=0, best_length=0)
+            if GS:
+                streak = GS(user_id=user_id, child_id=child_id, current_length=0, best_length=0)
             db.add(streak)
 
         # Active day if any meal exists
@@ -164,7 +171,7 @@ def update_streak(db: Session, user_id: str, child_id: str, day: date) -> Dict:
             if streak.current_length > streak.best_length:
                 streak.best_length = streak.current_length
         db.commit()
-        return {"current": streak.current_length, "best": streak.best_length}
+        return {"current": streak.current_length if streak else 0, "best": streak.best_length if streak else 0}
     except SQLAlchemyError:
         db.rollback()
         # Fallback ephemeral streak: 1 if any meal exists today, else 0
@@ -183,16 +190,19 @@ def update_streak(db: Session, user_id: str, child_id: str, day: date) -> Dict:
 
 
 def _insert_points_once(db: Session, user_id: str, child_id: str, day: date, points: int, reason: str) -> int:
+    gm = _gm_module()
     try:
-        exists = db.query(GamPointsLedger).filter(
-            GamPointsLedger.user_id == user_id,
-            GamPointsLedger.child_id == child_id,
-            GamPointsLedger.date == day,
-            GamPointsLedger.reason == reason,
-        ).first()
+        GPL = gm.GamPointsLedger if gm and hasattr(gm, "GamPointsLedger") else None
+        exists = db.query(GPL).filter(
+            GPL.user_id == user_id,
+            GPL.child_id == child_id,
+            GPL.date == day,
+            GPL.reason == reason,
+        ).first() if GPL else None
         if exists:
             return 0
-        db.add(GamPointsLedger(user_id=user_id, child_id=child_id, date=day, points=points, reason=reason))
+        if GPL:
+            db.add(GPL(user_id=user_id, child_id=child_id, date=day, points=points, reason=reason))
         db.commit()
         return points
     except SQLAlchemyError:
@@ -212,7 +222,11 @@ def award_points(db: Session, user_id: str, child_id: str, day: date, daily_scor
 
 
 def _get_or_create_badge(db: Session, name: str, badge_type: BadgeType) -> Badge:
+    gm = _gm_module()
     try:
+        Badge = gm.Badge if gm and hasattr(gm, "Badge") else None
+        if not Badge:
+            raise SQLAlchemyError("Badge model missing")
         b = db.query(Badge).filter(Badge.name == name).first()
         if b:
             return b
@@ -229,7 +243,10 @@ def _get_or_create_badge(db: Session, name: str, badge_type: BadgeType) -> Badge
 
 
 def maybe_award_badges(db: Session, user_id: str, child_id: str, day: date, daily_score: int, streak: Dict):
+    gm = _gm_module()
     try:
+        UserBadge = gm.UserBadge if gm and hasattr(gm, "UserBadge") else None
+        BadgeType = gm.BadgeType if gm and hasattr(gm, "BadgeType") else None
         # starter_chef: first meal ever for this child
         first_meal = (
             db.query(Meal.id)
@@ -239,18 +256,19 @@ def maybe_award_badges(db: Session, user_id: str, child_id: str, day: date, dail
             .first()
         )
         if first_meal and streak.get("current", 0) == 1:
-            b = _get_or_create_badge(db, "starter_chef", BadgeType.MILESTONE)
-            if getattr(b, "id", None) is not None and not db.query(UserBadge).filter(UserBadge.user_id == user_id, UserBadge.badge_id == b.id).first():
-                db.add(UserBadge(user_id=user_id, badge_id=b.id))
+            if BadgeType:
+                b = _get_or_create_badge(db, "starter_chef", BadgeType.MILESTONE)
+                if UserBadge and getattr(b, "id", None) is not None and not db.query(UserBadge).filter(UserBadge.user_id == user_id, UserBadge.badge_id == b.id).first():
+                    db.add(UserBadge(user_id=user_id, badge_id=b.id))
 
-        if streak.get("best", 0) >= 7:
+        if BadgeType and streak.get("best", 0) >= 7:
             b = _get_or_create_badge(db, "seven_day_strong", BadgeType.STREAK)
-            if getattr(b, "id", None) is not None and not db.query(UserBadge).filter(UserBadge.user_id == user_id, UserBadge.badge_id == b.id).first():
+            if UserBadge and getattr(b, "id", None) is not None and not db.query(UserBadge).filter(UserBadge.user_id == user_id, UserBadge.badge_id == b.id).first():
                 db.add(UserBadge(user_id=user_id, badge_id=b.id))
 
-        if daily_score >= 90:
+        if BadgeType and daily_score >= 90:
             b = _get_or_create_badge(db, "perfect_day", BadgeType.ACHIEVEMENT)
-            if getattr(b, "id", None) is not None and not db.query(UserBadge).filter(UserBadge.user_id == user_id, UserBadge.badge_id == b.id).first():
+            if UserBadge and getattr(b, "id", None) is not None and not db.query(UserBadge).filter(UserBadge.user_id == user_id, UserBadge.badge_id == b.id).first():
                 db.add(UserBadge(user_id=user_id, badge_id=b.id))
         db.commit()
     except SQLAlchemyError:
