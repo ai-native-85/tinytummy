@@ -5,21 +5,32 @@ from datetime import datetime
 
 class CaregiverInviteRequest(BaseModel):
     child_id: str
-    caregiver_email: str
-    permissions: Optional[Dict[str, bool]] = None
+    invitee_email: str
+    role: Optional[str] = "viewer"
 
 
-class CaregiverResponse(BaseModel):
+class CaregiverInviteResponse(BaseModel):
     id: str
     child_id: str
-    primary_user_id: str
-    caregiver_user_id: str
-    permissions: Dict[str, bool]
+    inviter_user_id: str
+    invitee_email: str
+    role: str
     status: str
-    invited_at: datetime
-    responded_at: Optional[datetime] = None
+    token: str
     created_at: datetime
     updated_at: datetime
 
     class Config:
-        from_attributes = True 
+        from_attributes = True
+
+
+class CaregiverAccessResponse(BaseModel):
+    id: str
+    child_id: str
+    user_id: str
+    role: str
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True

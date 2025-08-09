@@ -149,14 +149,17 @@ def get_meal_trends(
     by_day = {r.d: r for r in rows if r.d}
 
     # Prefer saved scores
-    from app.models.gamification import GamDailyScore
-    scores = db.query(GamDailyScore.date, GamDailyScore.score).filter(
-        GamDailyScore.user_id == current_user_id,
-        GamDailyScore.child_id == child_id,
-        GamDailyScore.date >= start_date,
-        GamDailyScore.date <= end_date,
-    ).all()
-    score_map = {d: s for d, s in scores}
+    try:
+        from app.models.gamification import GamDailyScore
+        scores = db.query(GamDailyScore.date, GamDailyScore.score).filter(
+            GamDailyScore.user_id == current_user_id,
+            GamDailyScore.child_id == child_id,
+            GamDailyScore.date >= start_date,
+            GamDailyScore.date <= end_date,
+        ).all()
+        score_map = {d: s for d, s in scores}
+    except Exception:
+        score_map = {}
 
     out = []
     cur = start_date
@@ -209,7 +212,21 @@ def edit_meal(
             recompute_for_day(db, current_user_id, str(meal.child_id), new_day)
     except Exception:
         logger.warning("[meals] recompute after edit failed", exc_info=True)
-    return meal
+    # Attach affected_dates for FE cache invalidation
+    try:
+        ad = sorted({str(old_day), str(new_day)})
+    except Exception:
+        ad = list({str(old_day), str(new_day)})
+    obj = meal
+    try:
+        # If meal is a SQLAlchemy model, enrich via __dict__ copy for response_model
+        data = MealResponse.model_validate(meal).model_dump()
+        data["affected_dates"] = ad
+        return data
+    except Exception:
+        # Fallback: add attribute dynamically
+        setattr(obj, "affected_dates", ad)
+        return obj
 
 @router.delete("/{meal_id}")
 def delete_meal(

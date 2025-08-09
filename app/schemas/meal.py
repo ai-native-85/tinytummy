@@ -73,6 +73,7 @@ class MealResponse(BaseModel):
     logged_at: datetime
     created_at: datetime
     updated_at: datetime
+    affected_dates: Optional[List[str]] = None
 
     @field_validator('id', 'child_id', 'user_id', mode='before')
     @classmethod
