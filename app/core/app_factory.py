@@ -91,7 +91,6 @@ def create_app() -> FastAPI:
         ("app.routes.plans", "router"),
         ("app.routes.reports", "router"),
         ("app.routes.chat", "router"),
-        ("app.routes.caregiver", "router"),
         ("app.routes.sync", "router"),
         ("app.routes.audio", "router"),
     ]:
@@ -100,6 +99,14 @@ def create_app() -> FastAPI:
             app.include_router(getattr(module, attr))
         except Exception:
             continue
+
+    # Explicitly include caregivers router with clear log to detect failures
+    try:
+        from app.routes.caregiver import router as caregivers_router
+        app.include_router(caregivers_router)
+        logger.info("[caregivers] router mounted")
+    except Exception:
+        logger.exception("[caregivers] router include failed")
 
     # Debug / health endpoints
     GIT_SHA = os.getenv("GIT_SHA", "unknown")
